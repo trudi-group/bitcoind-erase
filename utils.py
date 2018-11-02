@@ -1,10 +1,8 @@
 # originally from https://github.com/sr-gi/bitcoin_tools
 
 import plyvel
-from binascii import hexlify, unhexlify
-# from bitcoin_tools.analysis.status import *
-# from bitcoin_tools.core.script import OutputScript
-# from bitcoin_tools.core.keys import get_uncompressed_pk
+from binascii import hexlify, unhexlify # TODO still need these?
+from bitcoin.core import lx, x
 
 
 def txout_compress(n):
@@ -389,7 +387,7 @@ def get_utxo(tx_id, index, fin_name):
     """
 
     prefix = b'C'
-    outpoint = prefix + unhexlify(tx_id + b128_encode(index))
+    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
@@ -410,6 +408,34 @@ def get_utxo(tx_id, index, fin_name):
     db.close()
 
     return (outpoint, coin)
+
+
+def erase_utxo(tx_id, index, fin_name):
+    """
+    Erase UTXO from chainstate database.
+
+    TODO
+
+    :param tx_id: Transaction ID that identifies the UTXO you are looking for.
+    :type tx_id: str
+    :param index: Index that identifies the specific output.
+    :type index: int
+    :param fin_name: Name of the LevelDB folder (chainstate by default)
+    :type fin_name: str
+    :return:
+    :rtype:
+    """
+
+    prefix = b'C'
+    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
+
+    # TODO use more pythonic LevelDB wrapper? Something with "with"?
+    db = plyvel.DB(fin_name, compression=None)
+
+    assert(db.get(outpoint) is not None)
+    db.delete(outpoint)
+
+    db.close()
 
 
 def deobfuscate_value(obfuscation_key, value):

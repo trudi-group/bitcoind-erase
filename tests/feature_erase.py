@@ -22,7 +22,6 @@ from test_framework.mininode import (
     P2PInterface,
 )
 from test_framework.util import (
-    append_config,
     assert_equal,
     assert_raises,
     assert_raises_rpc_error,
@@ -32,6 +31,11 @@ from test_framework.util import (
     hex_str_to_bytes,
     sync_blocks,
 )
+
+# FIXME this uglyness
+import sys
+sys.path.append('.')
+from utils import erase_utxo
 
 
 # P2PInterface is a class containing callbacks to be executed when a P2P
@@ -64,6 +68,7 @@ class ErasureTest(BitcoinTestFramework):
         bad_data = 'n42MaFLwantedToTestThisKYP112MM9jE'
         tx_bad = n0.createrawtransaction([], {bad_data: 0.001})
         (tx_bad, txid_bad) = fund_sign_send(n0, tx_bad)  # also adds inputs and change output
+        tx_bad_vouts = n0.decoderawtransaction(tx_bad)['vout']
 
         self.log.info("Add tx to a block, mine a few blocks on top.")
         block_height_bad = n0.getblockcount()
@@ -81,7 +86,13 @@ class ErasureTest(BitcoinTestFramework):
 
         self.log.info("Mark tx as bad/erased at node 2.")
         self.stop_node(2)
-        append_config(n2.datadir, ["prune=1", "erase=%s:%s" % (str(block_height_bad), txid_bad)])
+
+        chainstate_dir = n2.datadir + '/regtest/chainstate/'
+
+        for index in range(len(tx_bad_vouts)):
+            erase_utxo(txid_bad, index, chainstate_dir)
+        # TODO tell node to prune blk files
+
         self.start_node(2)
         connect_nodes_bi(self.nodes, 0, 2)
 
