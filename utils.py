@@ -1,8 +1,11 @@
-# originally from https://github.com/sr-gi/bitcoin_tools
+# some functions originally from https://github.com/sr-gi/bitcoin_tools
 
 import plyvel
 from binascii import hexlify, unhexlify # TODO still need these?
 from bitcoin.core import lx, x
+
+import bitcoin
+import bitcoin.rpc
 
 
 def txout_compress(n):
@@ -470,3 +473,13 @@ def deobfuscate_value(obfuscation_key, value):
     assert len(value) == len(r)
 
     return r
+
+
+def prune_up_to(height, btc_conf_file, mode='testnet'):
+
+    bitcoin.SelectParams(mode)
+
+    proxy = bitcoin.rpc.Proxy(btc_conf_file=btc_conf_file)
+
+    # TODO if fails, shows meaningful error message? (that user needs to turn on prune, e.g.)
+    proxy.call('pruneblockchain', height)

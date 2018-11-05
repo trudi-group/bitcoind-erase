@@ -22,6 +22,7 @@ from test_framework.mininode import (
     P2PInterface,
 )
 from test_framework.util import (
+    append_config,
     assert_equal,
     assert_raises,
     assert_raises_rpc_error,
@@ -35,7 +36,7 @@ from test_framework.util import (
 # FIXME this uglyness
 import sys
 sys.path.append('.')
-from utils import erase_utxo
+import utils
 
 
 # P2PInterface is a class containing callbacks to be executed when a P2P
@@ -62,6 +63,7 @@ class ErasureTest(BitcoinTestFramework):
 
         self.log.info("Starting test!")
         [n0, n1, n2] = self.nodes  # n2 is the erasing node
+        n0.generate(nblocks=1000)  # to satisfy PruneAfterHeight
 
         self.log.info("Build a \"bad\" transaction.")
 
@@ -84,16 +86,25 @@ class ErasureTest(BitcoinTestFramework):
         n2.p2p.send_message(msg_getdata(inv=[CInv(2, block_hash_bad)]))
         n2.p2p.wait_for_block(block_hash_bad, timeout=1)
 
-        self.log.info("Mark tx as bad/erased at node 2.")
+        self.log.info("Stopping node 2.")
         self.stop_node(2)
 
+        self.log.info("Erasing all outputs of the bad tx from the chainstate database.")
+        # TODO: comment what "erasing" actually means
         chainstate_dir = n2.datadir + '/regtest/chainstate/'
-
         for index in range(len(tx_bad_vouts)):
-            erase_utxo(txid_bad, index, chainstate_dir)
-        # TODO tell node to prune blk files
+            utils.erase_utxo(txid_bad, index, chainstate_dir)
 
+        self.log.info("Configuring node 2 to enable pruning.")
+        append_config(n2.datadir, ["prune=1"])
+
+        self.log.info("Starting node 2.")
         self.start_node(2)
+
+        self.log.info("Pruning blk files up to the block with the bad tx.")
+        conf_file = n2.datadir + '/bitcoin.conf'
+        utils.prune_up_to(block_height_bad, conf_file, mode='regtest')
+
         connect_nodes_bi(self.nodes, 0, 2)
 
         self.log.info("Assert that tx can't be obtained from node 2 via RPC (getrawtransaction) anymore.")
