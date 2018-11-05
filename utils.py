@@ -8,6 +8,9 @@ import bitcoin
 import bitcoin.rpc
 
 
+NSPECIALSCRIPTS = 6
+
+
 def txout_compress(n):
     """ Compresses the Satoshi amount of a UTXO to be stored in the LevelDB. Code is a port from the Bitcoin Core C++
     source:
@@ -173,6 +176,58 @@ def parse_b128(utxo, offset=0):
         offset += 2
 
     return data, offset
+
+
+def make_anyone_can_spend(coin):
+    code, offset = parse_b128(coin)
+    value, offset = parse_b128(coin, offset)
+
+    new_coin = coin[:offset]
+
+    new_out_type = (1 + NSPECIALSCRIPTS)
+    op_true = 1
+
+    new_coin += b128_encode(new_out_type) + b128_encode(op_true) 
+
+    return new_coin
+
+
+def extract_script(coin):
+
+    # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
+    # height, whether the transaction is coinbase or not, value, script type and script.
+    # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
+    code, offset = parse_b128(coin)
+    code = b128_decode(code)
+    height = code >> 1
+    coinbase = code & 0x01
+
+    # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
+    # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
+    data, offset = parse_b128(coin, offset)
+    amount = txout_decompress(b128_decode(data))
+
+    # Finally, we can obtain the data type by parsing the last B128 VARINT
+    out_type, offset = parse_b128(coin, offset)
+    out_type = b128_decode(out_type)
+
+    if out_type in [0, 1]:
+        data_size = 40  # 20 bytes
+    elif out_type in [2, 3, 4, 5]:
+        data_size = 66  # 33 bytes (1 byte for the type + 32 bytes of data)
+        offset -= 2
+    # Finally, if another value is found, it represents the length of the following data, which is uncompressed.
+    else:
+        data_size = (out_type - NSPECIALSCRIPTS) * 2  # If the data is not compacted, the out_type corresponds
+        # to the data size adding the number os special scripts (nSpecialScripts).
+
+    # And the remaining data corresponds to the script.
+    script = coin[offset:]
+
+    # Assert that the script hash the expected length
+    assert len(script) == data_size
+
+    return script
 
 
 def decode_utxo(coin, outpoint):
@@ -413,6 +468,46 @@ def get_utxo(tx_id, index, fin_name):
     return (outpoint, coin)
 
 
+# TODO refactor significant code duplication
+def put_utxo(coin, tx_id, index, fin_name):
+    """
+    Puts a UTXO into the chainstate under a given transaction id and index.
+
+    :param coin: Serialized coin to put
+    :type coin: bytes
+    :param tx_id: Transaction ID that identifies the UTXO you are looking for.
+    :type tx_id: str
+    :param index: Index that identifies the specific output.
+    :type index: int
+    :param fin_name: Name of the LevelDB folder (chainstate by default)
+    :type fin_name: str
+    :return:
+    :rtype:
+    """
+
+    prefix = b'C'
+    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
+
+    # Open the LevelDB
+    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
+
+    # Load obfuscation key (if it exists)
+    o_key = db.get((unhexlify('0e00') + b'obfuscate_key'))
+
+    # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
+    # 8-byte zeros are used (since the key will be XORed with the given values).
+    if o_key is not None:
+        o_key = hexlify(o_key)[2:]
+
+    coin = deobfuscate_value(o_key, hexlify(coin))
+
+    db.put(outpoint, x(coin))
+
+    db.close()
+
+    return (outpoint, coin)
+
+
 def erase_utxo(tx_id, index, fin_name):
     """
     Erase UTXO from chainstate database.
@@ -429,16 +524,10 @@ def erase_utxo(tx_id, index, fin_name):
     :rtype:
     """
 
-    prefix = b'C'
-    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
-
-    # TODO use more pythonic LevelDB wrapper? Something with "with"?
-    db = plyvel.DB(fin_name, compression=None)
-
-    assert(db.get(outpoint) is not None)
-    db.delete(outpoint)
-
-    db.close()
+    # TODO refactor significant code duplication + make cleaner in general
+    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
+    new_coin = make_anyone_can_spend(coin)
+    put_utxo(x(coin), tx_id, index, fin_name)
 
 
 def deobfuscate_value(obfuscation_key, value):

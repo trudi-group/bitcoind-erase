@@ -24,6 +24,7 @@ from test_framework.mininode import (
 from test_framework.util import (
     append_config,
     assert_equal,
+    assert_not_equal,
     assert_raises,
     assert_raises_rpc_error,
     bytes_to_hex_str,
@@ -89,8 +90,7 @@ class ErasureTest(BitcoinTestFramework):
         self.log.info("Stopping node 2.")
         self.stop_node(2)
 
-        self.log.info("Erasing all outputs of the bad tx from the chainstate database.")
-        # TODO: comment what "erasing" actually means
+        self.log.info("Replacing the outputs of the bad tx with 'anyone-can-spend' outputs.")
         chainstate_dir = n2.datadir + '/regtest/chainstate/'
         for index in range(len(tx_bad_vouts)):
             utils.erase_utxo(txid_bad, index, chainstate_dir)
@@ -107,8 +107,8 @@ class ErasureTest(BitcoinTestFramework):
 
         connect_nodes_bi(self.nodes, 0, 2)
 
-        self.log.info("Assert that tx can't be obtained from node 2 via RPC (getrawtransaction) anymore.")
-        assert_raises_rpc_error(-5, None, n2.getrawtransaction, txid_bad)
+        self.log.info("Assert that tx is different now when obtained from node 2 via RPC.")
+        assert_equal(bytes_to_hex_str(hash256(hex_str_to_bytes(n2.getrawtransaction(txid_bad)))), txid_bad)
 
         self.log.info("Assert that the tx's block can't be obtained from node 2 via P2P anymore.")
         n2.add_p2p_connection(P2PInterface())
