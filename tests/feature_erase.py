@@ -13,6 +13,8 @@ is testing and *how* it's being tested
 # libraries then local imports).
 
 # Avoid wildcard * imports if possible
+from os import path
+
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.messages import (
     CInv,
@@ -24,14 +26,15 @@ from test_framework.mininode import (
 from test_framework.util import (
     append_config,
     assert_equal,
-    assert_not_equal,
     assert_raises,
     assert_raises_rpc_error,
     bytes_to_hex_str,
     connect_nodes_bi,
+    mine_large_block,
     hash256,
     hex_str_to_bytes,
     sync_blocks,
+    sync_mempools,
 )
 
 # FIXME this uglyness
@@ -64,19 +67,24 @@ class ErasureTest(BitcoinTestFramework):
 
         self.log.info("Starting test!")
         [n0, n1, n2] = self.nodes  # n2 is the erasing node
-        n0.generate(nblocks=1000)  # to satisfy PruneAfterHeight
+
+        self.log.info("Generate a few blocks upfront to make sure pruning kicks in.")
+        # On pruning, we must have a chain longer than PruneAfterHeight and bigger than 550 MiB.
+        mine_large_blocks(n0, nblocks=200)
+        self.nodes[0].generate(nblocks=200)
 
         self.log.info("Build a \"bad\" transaction.")
-
         bad_data = 'n42MaFLwantedToTestThisKYP112MM9jE'
-        tx_bad = n0.createrawtransaction([], {bad_data: 0.001})
-        (tx_bad, txid_bad) = fund_sign_send(n0, tx_bad)  # also adds inputs and change output
-        tx_bad_vouts = n0.decoderawtransaction(tx_bad)['vout']
+        tx_bad = n1.createrawtransaction([], {bad_data: 0.001})
+        (tx_bad, txid_bad) = fund_sign_send(n1, tx_bad)  # also adds inputs and change output
+        tx_bad_vouts = n1.decoderawtransaction(tx_bad)['vout']
 
-        self.log.info("Add tx to a block, mine a few blocks on top.")
-        block_height_bad = n0.getblockcount()
-        # right now, significantly lower nblocks will cause pruning not to work
-        block_hash_bad = int(n0.generate(nblocks=300)[0], 16)
+        self.log.info("Add tx to a block, mine a few big blocks on top.")
+        self.sync_all()
+        block_hash_bad = n0.generate(nblocks=1)[0]
+        # significantly lower nblocks might cause pruning not to work (needs changes to bitcoind pruning logic)
+        mine_large_blocks(n0, nblocks=300)
+        self.nodes[0].generate(nblocks=300)
         self.sync_all()
 
         self.log.info("Assert that node 2 serves the tx via RPC.")
@@ -84,8 +92,8 @@ class ErasureTest(BitcoinTestFramework):
 
         self.log.info("Assert that node 2 serves the block with the tx via P2P.")
         n2.add_p2p_connection(P2PInterface())
-        n2.p2p.send_message(msg_getdata(inv=[CInv(2, block_hash_bad)]))
-        n2.p2p.wait_for_block(block_hash_bad, timeout=1)
+        n2.p2p.send_message(msg_getdata(inv=[CInv(2, int(block_hash_bad, 16))]))
+        n2.p2p.wait_for_block(int(block_hash_bad, 16), timeout=1)
 
         self.log.info("Stopping node 2.")
         self.stop_node(2)
@@ -95,6 +103,9 @@ class ErasureTest(BitcoinTestFramework):
         for index in range(len(tx_bad_vouts)):
             utils.erase_utxo(txid_bad, index, chainstate_dir)
 
+        self.log.info("Getting height to prune to.")
+        prune_height = utils.get_min_height_to_prune_to(block_hash_bad, n2.datadir, mode='regtest')
+
         self.log.info("Configuring node 2 to enable pruning.")
         append_config(n2.datadir, ["prune=1"])
 
@@ -102,27 +113,27 @@ class ErasureTest(BitcoinTestFramework):
         self.start_node(2)
 
         self.log.info("Pruning blk files up to the block with the bad tx.")
-        conf_file = n2.datadir + '/bitcoin.conf'
-        utils.prune_up_to(block_height_bad, conf_file, mode='regtest')
+        utils.prune_up_to(prune_height, path.join(n2.datadir, 'bitcoin.conf'), mode='regtest')
 
         connect_nodes_bi(self.nodes, 0, 2)
 
-        self.log.info("Assert that tx is different now when obtained from node 2 via RPC.")
-        assert_equal(bytes_to_hex_str(hash256(hex_str_to_bytes(n2.getrawtransaction(txid_bad)))), txid_bad)
-
         self.log.info("Assert that the tx's block can't be obtained from node 2 via P2P anymore.")
         n2.add_p2p_connection(P2PInterface())
-        n2.p2p.send_message(msg_getdata(inv=[CInv(2, block_hash_bad)]))
-        assert_raises(AssertionError, n2.p2p.wait_for_block, block_hash_bad, timeout=1)
+        n2.p2p.send_message(msg_getdata(inv=[CInv(2, int(block_hash_bad, 16))]))
+        assert_raises(AssertionError, n2.p2p.wait_for_block, int(block_hash_bad, 16), timeout=1)
+
+        self.log.info("Assert that tx is different now when obtained from node 2 via RPC.")
+        assert_raises_rpc_error(-5, None, n2.getrawtransaction, txid_bad)
 
         self.log.info("Assert that node 2 accepts new blocks.")
         n0.generate(nblocks=1)
         sync_blocks(self.nodes, timeout=1)
 
         self.log.info("Spend one output of the bad tx, include that in block.")
-        tx_bad_vout = [x for x in n0.listunspent() if x['txid'] == txid_bad][0]
-        tx_ok = n0.createrawtransaction([tx_bad_vout], {n1.getnewaddress(): 0.5})
-        (tx_ok, txid_ok) = fund_sign_send(n0, tx_ok)
+        tx_bad_vout = [x for x in n1.listunspent() if x['txid'] == txid_bad][0]
+        tx_ok = n1.createrawtransaction([tx_bad_vout], {n0.getnewaddress(): 0.5})
+        (tx_ok, txid_ok) = fund_sign_send(n1, tx_ok)
+        sync_mempools([n0, n1])
         n0.generate(nblocks=1)
 
         self.log.info("Assert that node 2 accepts the resulting transaction and block.")
@@ -133,11 +144,32 @@ class ErasureTest(BitcoinTestFramework):
         self.sync_all()
 
 
+def mine_large_blocks(node, nblocks):
+
+    utxo_cache = []
+
+    for i in range(nblocks):
+        mine_large_block(node, utxo_cache)
+
+
+# perhaps useful for 50% fuzz test
+def generate_nonempty_blocks(nodes, nblocks=500):
+    txes_per_block = 10
+
+    for i in range(nblocks):
+        for j in range(txes_per_block):
+            (s, r) = random.sample(nodes, k=2)
+            amount = random.randint(1, 1000)/ 1000.
+            s.sendtoaddress(r.getnewaddress(), amount)
+        random.choice(nodes).generate(nblocks=1)
+        sync_blocks(nodes)
+
+
 def fund_sign_send(node, tx):
-        tx = node.fundrawtransaction(tx)['hex']
-        tx = node.signrawtransactionwithwallet(tx)["hex"]
-        txid = node.sendrawtransaction(tx)
-        return (tx, txid)
+    tx = node.fundrawtransaction(tx)['hex']
+    tx = node.signrawtransactionwithwallet(tx)["hex"]
+    txid = node.sendrawtransaction(tx)
+    return (tx, txid)
 
 
 if __name__ == '__main__':

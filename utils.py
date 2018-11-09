@@ -1,14 +1,17 @@
 # some functions originally from https://github.com/sr-gi/bitcoin_tools
 
+from os import path
+
 import plyvel
-from binascii import hexlify, unhexlify # TODO still need these?
+
+from binascii import hexlify, unhexlify  # TODO still need these?
 from bitcoin.core import lx, x
 
 import bitcoin
 import bitcoin.rpc
 
 
-NSPECIALSCRIPTS = 6
+NSPECIALSCRIPTS = 6  # nSpecialScripts from bitcoind's src/compressor.h
 
 
 def txout_compress(n):
@@ -187,7 +190,7 @@ def make_anyone_can_spend(coin):
     new_out_type = (1 + NSPECIALSCRIPTS)
     op_true = 1
 
-    new_coin += b128_encode(new_out_type) + b128_encode(op_true) 
+    new_coin += b128_encode(new_out_type) + b128_encode(op_true)
 
     return new_coin
 
@@ -199,13 +202,10 @@ def extract_script(coin):
     # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
     code, offset = parse_b128(coin)
     code = b128_decode(code)
-    height = code >> 1
-    coinbase = code & 0x01
 
     # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
     # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
     data, offset = parse_b128(coin, offset)
-    amount = txout_decompress(b128_decode(data))
 
     # Finally, we can obtain the data type by parsing the last B128 VARINT
     out_type, offset = parse_b128(coin, offset)
@@ -228,6 +228,49 @@ def extract_script(coin):
     assert len(script) == data_size
 
     return script
+
+
+def get_blk_n_from_block_data(data):
+    """TODO: Docstring for decode_block_data.
+
+    :data: TODO
+    :returns: TODO
+
+    """
+    height, offset = parse_b128(data)
+    status, offset = parse_b128(data, offset)
+    if not status:
+        return None
+    ntx, offset = parse_b128(data, offset)
+    nfile, offset = parse_b128(data, offset)
+    return b128_decode(nfile)
+
+
+def get_blk_max_block_height(blk_n, fin_name):
+    """TODO: Docstring for get_blk_max_block_height.
+
+    :blk_n: TODO
+    :returns: TODO
+
+    """
+    prefix = b'f'
+    key = prefix + blk_n.to_bytes(4, byteorder='little')
+
+    # Open the LevelDB
+    db = plyvel.DB(fin_name, compression=None)
+
+    data = hexlify(db.get(key))
+
+    db.close()
+
+    # parse data directly
+    nBlocks, offset = parse_b128(data)
+    nSize, offset = parse_b128(data, offset)
+    nUndoSize, offset = parse_b128(data, offset)
+    nHeightFirst, offset = parse_b128(data, offset)
+    nHeightLast, offset = parse_b128(data, offset)
+
+    return b128_decode(nHeightLast)
 
 
 def decode_utxo(coin, outpoint):
@@ -468,6 +511,24 @@ def get_utxo(tx_id, index, fin_name):
     return (outpoint, coin)
 
 
+def get_block_index_entry(block_hash, fin_name):
+    """
+    TODO
+    """
+
+    prefix = b'b'
+    key = prefix + lx(block_hash)
+
+    # Open the LevelDB
+    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
+
+    block_info = db.get(key)
+
+    db.close()
+
+    return block_info
+
+
 # TODO refactor significant code duplication
 def put_utxo(coin, tx_id, index, fin_name):
     """
@@ -527,7 +588,7 @@ def erase_utxo(tx_id, index, fin_name):
     # TODO refactor significant code duplication + make cleaner in general
     (outpoint, coin) = get_utxo(tx_id, index, fin_name)
     new_coin = make_anyone_can_spend(coin)
-    put_utxo(x(coin), tx_id, index, fin_name)
+    put_utxo(x(new_coin), tx_id, index, fin_name)
 
 
 def deobfuscate_value(obfuscation_key, value):
@@ -562,6 +623,20 @@ def deobfuscate_value(obfuscation_key, value):
     assert len(value) == len(r)
 
     return r
+
+
+def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
+    """TODO: Docstring for get_min_height_to_prune_to.
+
+    :data_dir: TODO
+    :mode: TODO
+    :returns: TODO
+
+    """
+    fin_name = path.join(data_dir, mode, 'blocks', 'index')
+
+    blk_n = get_blk_n_from_block_data(hexlify(get_block_index_entry(block_hash, fin_name)))
+    return get_blk_max_block_height(blk_n, fin_name)
 
 
 def prune_up_to(height, btc_conf_file, mode='testnet'):
