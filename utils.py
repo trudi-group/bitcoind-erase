@@ -188,7 +188,7 @@ def make_anyone_can_spend(coin):
     new_coin = coin[:offset]
 
     new_out_type = (1 + NSPECIALSCRIPTS)
-    op_true = 1
+    op_true = 0x51
 
     new_coin += b128_encode(new_out_type) + b128_encode(op_true)
 
