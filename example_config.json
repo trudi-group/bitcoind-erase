@@ -1,0 +1,10 @@
+{
+  "bitcoind_data_dir" : "~/.bitcoin",
+  "chain" : "testnet", 
+  "erase" : {
+    "TODOputinterestingblockhashhere" : {
+      "TODOputinterestingtxidhere" : [ 0, 1 ],
+      "TODOanotherinterestingtxid" : [ 0 ]
+    }
+  }
+}
