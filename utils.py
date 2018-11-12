@@ -639,6 +639,43 @@ def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
     return get_blk_max_block_height(blk_n, fin_name)
 
 
+def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
+
+    # FIXME crashes if block_hash unknown
+    highest_bad_blk_n = get_heighest_bad_blk_n(block_hashes, data_dir, mode)
+    highest_bad_blk_n = str(highest_bad_blk_n).zfill(5)
+
+    unwanted_files = [
+            path.join(data_dir, mode, 'blocks', 'blk%s.dat' % highest_bad_blk_n),
+            path.join(data_dir, mode, 'blocks', 'rev%s.dat' % highest_bad_blk_n),
+            ]
+
+    return min(not path.isfile(f) for f in unwanted_files)
+
+
+def check_if_utxos_erased(utxos, data_dir, mode='testnet'):
+
+    return min(check_if_utxo_erased(x, data_dir, mode) for x in utxos)
+
+
+def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
+
+    (tx_id, index) = utxo
+    fin_name = path.join(data_dir, mode, 'chainstate')
+
+    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
+    if not coin:
+        return True
+    else:
+        return (coin == make_anyone_can_spend(coin))
+
+
+def get_heighest_bad_blk_n(block_hahes, data_dir, mode='testnet'):
+
+    fin_name = path.join(data_dir, mode, 'blocks', 'index')
+    return max(map(lambda x: get_blk_n_from_block_data(hexlify(get_block_index_entry(x, fin_name))), block_hahes))
+
+
 def prune_up_to(height, btc_conf_file, mode='testnet'):
 
     bitcoin.SelectParams(mode)
