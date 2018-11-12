@@ -2,9 +2,12 @@
   "bitcoind_data_dir" : "~/.bitcoin",
   "chain" : "testnet", 
   "erase" : {
-    "TODOputinterestingblockhashhere" : {
-      "TODOputinterestingtxidhere" : [ 0, 1 ],
-      "TODOanotherinterestingtxid" : [ 0 ]
+    "000000000000015b1605c8478853af1b10d1f3dfa8c8f9c6f8ecbece87f1fde4" : {
+      "6dcc260a3f3680ca4c0e3b01b10c2337ddd4d3a97b03131d168df8d945cecddb" : [ 0, 1 ]
+    },
+    "00000000000000b0faacc0c6099d2d859754215313afcfca7f9b036683cb4cc5" : {
+      "ade1bb6c42c7627db9b5d19e5d688d806a16828bb18108a7ec992d78e81662ad" : [ 0, 1, 2 ],
+      "ef37b5ffe16473a4cc290271807a90fedd7fa26506d303bf95f2a510af7a9059" : [ 0 ]
     }
   }
 }
