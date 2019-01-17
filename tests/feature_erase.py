@@ -79,6 +79,8 @@ class ErasureTest(BitcoinTestFramework):
         (tx_bad, txid_bad) = fund_sign_send(n1, tx_bad)  # also adds inputs and change output
         tx_bad_vouts = n1.decoderawtransaction(tx_bad)['vout']
 
+        bad_utxos = [(txid_bad, i) for i in range(len(tx_bad_vouts))]
+
         self.log.info("Add tx to a block, mine a few big blocks on top.")
         self.sync_all()
         block_hash_bad = n0.generate(nblocks=1)[0]
@@ -98,10 +100,16 @@ class ErasureTest(BitcoinTestFramework):
         self.log.info("Stopping node 2.")
         self.stop_node(2)
 
+        self.log.info("Assert that node 2 stores blk files for the block.")
+        assert_equal(utils.check_if_blks_erased([block_hash_bad], n2.datadir, 'regtest'), False)
+
+        self.log.info("Assert that node 2 has the original bad UTXOs in its chainstate database.")
+        assert_equal(utils.check_if_utxos_erased(bad_utxos, n2.datadir, 'regtest'), False)
+
         self.log.info("Replacing the outputs of the bad tx with 'anyone-can-spend' outputs.")
         chainstate_dir = n2.datadir + '/regtest/chainstate/'
-        for index in range(len(tx_bad_vouts)):
-            utils.erase_utxo(txid_bad, index, chainstate_dir)
+        for (txid, index) in bad_utxos:
+            utils.erase_utxo(txid, index, chainstate_dir)
 
         self.log.info("Getting height to prune to.")
         prune_height = utils.get_min_height_to_prune_to(block_hash_bad, n2.datadir, mode='regtest')
@@ -142,6 +150,15 @@ class ErasureTest(BitcoinTestFramework):
 
         self.log.info("Wait for all nodes to sync again, just in case. Should complete immediately.")
         self.sync_all()
+
+        self.log.info("Stopping node 2 (again).")
+        self.stop_node(2)
+
+        self.log.info("Assert that node 2 removed blk files for the block.")
+        assert_equal(utils.check_if_blks_erased([block_hash_bad], n2.datadir, 'regtest'), True)
+
+        self.log.info("Assert that node 2 modified the bad UTXOs in its chainstate database.")
+        assert_equal(utils.check_if_utxos_erased(bad_utxos, n2.datadir, 'regtest'), True)
 
 
 def mine_large_blocks(node, nblocks):
