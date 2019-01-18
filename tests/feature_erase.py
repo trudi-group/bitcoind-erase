@@ -13,8 +13,6 @@ is testing and *how* it's being tested
 # libraries then local imports).
 
 # Avoid wildcard * imports if possible
-from os import path
-
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.messages import (
     CInv,
@@ -40,7 +38,7 @@ from test_framework.util import (
 # FIXME this uglyness
 import sys
 sys.path.append('.')
-import utils
+import tool
 
 
 # P2PInterface is a class containing callbacks to be executed when a P2P
@@ -79,8 +77,6 @@ class ErasureTest(BitcoinTestFramework):
         (tx_bad, txid_bad) = fund_sign_send(n1, tx_bad)  # also adds inputs and change output
         tx_bad_vouts = n1.decoderawtransaction(tx_bad)['vout']
 
-        bad_utxos = [(txid_bad, i) for i in range(len(tx_bad_vouts))]
-
         self.log.info("Add tx to a block, mine a few big blocks on top.")
         self.sync_all()
         block_hash_bad = n0.generate(nblocks=1)[0]
@@ -88,6 +84,8 @@ class ErasureTest(BitcoinTestFramework):
         mine_large_blocks(n0, nblocks=300)
         self.nodes[0].generate(nblocks=300)
         self.sync_all()
+
+        erase_target = {block_hash_bad: {txid_bad: list(range(len(tx_bad_vouts)))}}
 
         self.log.info("Assert that node 2 serves the tx via RPC.")
         assert_equal(bytes_to_hex_str(hash256(hex_str_to_bytes(n2.getrawtransaction(txid_bad)))), txid_bad)
@@ -100,30 +98,21 @@ class ErasureTest(BitcoinTestFramework):
         self.log.info("Stopping node 2.")
         self.stop_node(2)
 
-        self.log.info("Assert that node 2 stores blk files for the block.")
-        assert_equal(utils.check_if_blks_erased([block_hash_bad], n2.datadir, 'regtest'), False)
+        self.log.info("Assert that UTXOs not erased according to tool.")
+        assert_equal(tool.check(erase_target, n2.datadir, 'regtest'), False)
 
-        self.log.info("Assert that node 2 has the original bad UTXOs in its chainstate database.")
-        assert_equal(utils.check_if_utxos_erased(bad_utxos, n2.datadir, 'regtest'), False)
+        def react_to_ui_request(request):
+            assert("enable pruning" in request)
+            self.log.info("Configuring node 2 to enable pruning.")
+            append_config(n2.datadir, ["prune=1"])
 
-        self.log.info("Replacing the outputs of the bad tx with 'anyone-can-spend' outputs.")
-        chainstate_dir = n2.datadir + '/regtest/chainstate/'
-        for (txid, index) in bad_utxos:
-            utils.erase_utxo(txid, index, chainstate_dir)
+            assert("start your node" in request)
+            self.log.info("Starting node 2.")
+            self.start_node(2)
+            connect_nodes_bi(self.nodes, 0, 2)
 
-        self.log.info("Getting height to prune to.")
-        prune_height = utils.get_min_height_to_prune_to(block_hash_bad, n2.datadir, mode='regtest')
-
-        self.log.info("Configuring node 2 to enable pruning.")
-        append_config(n2.datadir, ["prune=1"])
-
-        self.log.info("Starting node 2.")
-        self.start_node(2)
-
-        self.log.info("Pruning blk files up to the block with the bad tx.")
-        utils.prune_up_to(prune_height, path.join(n2.datadir, 'bitcoin.conf'), mode='regtest')
-
-        connect_nodes_bi(self.nodes, 0, 2)
+        self.log.info("Erasing using tool.")
+        tool.interactive_erase(erase_target, n2.datadir, 'regtest', self.log.info, react_to_ui_request)
 
         self.log.info("Assert that the tx's block can't be obtained from node 2 via P2P anymore.")
         n2.add_p2p_connection(P2PInterface())
@@ -154,11 +143,8 @@ class ErasureTest(BitcoinTestFramework):
         self.log.info("Stopping node 2 (again).")
         self.stop_node(2)
 
-        self.log.info("Assert that node 2 removed blk files for the block.")
-        assert_equal(utils.check_if_blks_erased([block_hash_bad], n2.datadir, 'regtest'), True)
-
-        self.log.info("Assert that node 2 modified the bad UTXOs in its chainstate database.")
-        assert_equal(utils.check_if_utxos_erased(bad_utxos, n2.datadir, 'regtest'), True)
+        self.log.info("Assert that UTXOs not erased according to tool.")
+        assert_equal(tool.check(erase_target, n2.datadir, 'regtest'), True)
 
 
 def mine_large_blocks(node, nblocks):

@@ -587,8 +587,17 @@ def erase_utxo(tx_id, index, fin_name):
 
     # TODO refactor significant code duplication + make cleaner in general
     (outpoint, coin) = get_utxo(tx_id, index, fin_name)
-    new_coin = make_anyone_can_spend(coin)
-    put_utxo(x(new_coin), tx_id, index, fin_name)
+    if coin:
+        new_coin = make_anyone_can_spend(coin)
+        put_utxo(x(new_coin), tx_id, index, fin_name)
+
+
+def erase_utxos(utxos, data_dir, mode):
+
+    chainstate_dir = path.join(data_dir, mode, 'chainstate')
+
+    for (txid, index) in utxos:
+        erase_utxo(txid, index, chainstate_dir)
 
 
 def deobfuscate_value(obfuscation_key, value):
@@ -670,10 +679,10 @@ def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
         return (coin == make_anyone_can_spend(coin))
 
 
-def get_heighest_bad_blk_n(block_hahes, data_dir, mode='testnet'):
+def get_heighest_bad_blk_n(block_hashes, data_dir, mode='testnet'):
 
     fin_name = path.join(data_dir, mode, 'blocks', 'index')
-    return max(map(lambda x: get_blk_n_from_block_data(hexlify(get_block_index_entry(x, fin_name))), block_hahes))
+    return max(map(lambda x: get_blk_n_from_block_data(hexlify(get_block_index_entry(x, fin_name))), block_hashes))
 
 
 def prune_up_to(height, btc_conf_file, mode='testnet'):
