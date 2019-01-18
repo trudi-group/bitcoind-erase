@@ -594,7 +594,7 @@ def erase_utxo(tx_id, index, fin_name):
 
 def erase_utxos(utxos, data_dir, mode):
 
-    chainstate_dir = path.join(data_dir, mode, 'chainstate')
+    chainstate_dir = path.join(data_dir, mode2dir(mode), 'chainstate')
 
     for (txid, index) in utxos:
         erase_utxo(txid, index, chainstate_dir)
@@ -642,7 +642,7 @@ def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
     :returns: TODO
 
     """
-    fin_name = path.join(data_dir, mode, 'blocks', 'index')
+    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
 
     blk_n = get_blk_n_from_block_data(hexlify(get_block_index_entry(block_hash, fin_name)))
     return get_blk_max_block_height(blk_n, fin_name)
@@ -655,8 +655,8 @@ def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
     highest_bad_blk_n = str(highest_bad_blk_n).zfill(5)
 
     unwanted_files = [
-            path.join(data_dir, mode, 'blocks', 'blk%s.dat' % highest_bad_blk_n),
-            path.join(data_dir, mode, 'blocks', 'rev%s.dat' % highest_bad_blk_n),
+            path.join(data_dir, mode2dir(mode), 'blocks', 'blk%s.dat' % highest_bad_blk_n),
+            path.join(data_dir, mode2dir(mode), 'blocks', 'rev%s.dat' % highest_bad_blk_n),
             ]
 
     return min(not path.isfile(f) for f in unwanted_files)
@@ -670,7 +670,7 @@ def check_if_utxos_erased(utxos, data_dir, mode='testnet'):
 def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
 
     (tx_id, index) = utxo
-    fin_name = path.join(data_dir, mode, 'chainstate')
+    fin_name = path.join(data_dir, mode2dir(mode), 'chainstate')
 
     (outpoint, coin) = get_utxo(tx_id, index, fin_name)
     if not coin:
@@ -681,7 +681,7 @@ def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
 
 def get_heighest_bad_blk_n(block_hashes, data_dir, mode='testnet'):
 
-    fin_name = path.join(data_dir, mode, 'blocks', 'index')
+    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
     return max(map(lambda x: get_blk_n_from_block_data(hexlify(get_block_index_entry(x, fin_name))), block_hashes))
 
 
@@ -693,3 +693,11 @@ def prune_up_to(height, btc_conf_file, mode='testnet'):
 
     # TODO if fails, shows meaningful error message? (that user needs to turn on prune, e.g.)
     proxy.call('pruneblockchain', height)
+
+
+def mode2dir(mode):
+    return {
+            'mainnet': '.',
+            'testnet': 'testnet3',
+            'regtest': 'regtest',
+            }[mode]
