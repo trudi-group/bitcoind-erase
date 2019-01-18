@@ -15,7 +15,7 @@ def main():
         config = json.load(config_fp)
 
     # { blockhash -> { txid -> [ outpoint_index ] }
-    data_dir = config['bitcoind_data_dir']
+    data_dir = path.expanduser(config['bitcoind_data_dir'])
     mode = config['chain']  # mainnet / testnet / regtest ...
     erase_target = config['erase']
 
