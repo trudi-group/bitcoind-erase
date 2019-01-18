@@ -7,7 +7,7 @@ See paper draft.
 ## Requirements (probably incomplete!)
 
 ```
-pip3 install plyvel
+pip3 install plyvel python-bitcoinlib
 ```
 
 ## Tests
