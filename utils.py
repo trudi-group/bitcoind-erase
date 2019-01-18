@@ -645,7 +645,7 @@ def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
     fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
 
     blk_n = get_blk_n_from_block_data(hexlify(get_block_index_entry(block_hash, fin_name)))
-    return get_blk_max_block_height(blk_n, fin_name)
+    return get_blk_max_block_height(blk_n, fin_name) if blk_n else 0
 
 
 def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
