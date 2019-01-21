@@ -258,17 +258,20 @@ def get_blk_max_block_height(blk_n, fin_name):
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)
-
-    data = hexlify(db.get(key))
-
+    blk_data_raw = db.get(key)
     db.close()
 
+    if not blk_data_raw:
+        return 0
+
+    blk_data = hexlify(blk_data_raw)
+
     # parse data directly
-    nBlocks, offset = parse_b128(data)
-    nSize, offset = parse_b128(data, offset)
-    nUndoSize, offset = parse_b128(data, offset)
-    nHeightFirst, offset = parse_b128(data, offset)
-    nHeightLast, offset = parse_b128(data, offset)
+    nBlocks, offset = parse_b128(blk_data)
+    nSize, offset = parse_b128(blk_data, offset)
+    nUndoSize, offset = parse_b128(blk_data, offset)
+    nHeightFirst, offset = parse_b128(blk_data, offset)
+    nHeightLast, offset = parse_b128(blk_data, offset)
 
     return b128_decode(nHeightLast)
 
