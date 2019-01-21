@@ -1,6 +1,8 @@
 # some functions originally from https://github.com/sr-gi/bitcoin_tools
 
+import glob
 from os import path
+import re
 
 import plyvel
 
@@ -656,16 +658,15 @@ def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
 
 def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
 
-    # FIXME crashes if block_hash unknown
+    # FIXME crashes if block_hash unknown (really?)
     highest_bad_blk_n = get_heighest_bad_blk_n(block_hashes, data_dir, mode)
-    highest_bad_blk_n = str(highest_bad_blk_n).zfill(5)
 
-    unwanted_files = [
-            path.join(data_dir, mode2dir(mode), 'blocks', 'blk%s.dat' % highest_bad_blk_n),
-            path.join(data_dir, mode2dir(mode), 'blocks', 'rev%s.dat' % highest_bad_blk_n),
-            ]
+    blocks_path = path.join(data_dir, mode2dir(mode), 'blocks')
 
-    return min(not path.isfile(f) for f in unwanted_files)
+    lowest_stored_files = [sorted(glob.glob(path.join(blocks_path, regexp)))[0] for regexp in ['blk*.dat', 'rev*.dat']]
+    lowest_stored_blk_n = min([int(re.findall('\d+', x)[0]) for x in lowest_stored_files])
+
+    return lowest_stored_blk_n > highest_bad_blk_n
 
 
 def check_if_utxos_erased(utxos, data_dir, mode='testnet'):
