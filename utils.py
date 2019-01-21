@@ -233,13 +233,16 @@ def extract_script(coin):
 def get_blk_n_from_block_data(data):
     """TODO: Docstring for decode_block_data.
 
+    s.a. bitcoind's src/chain.h
+
     :data: TODO
     :returns: TODO
 
     """
-    height, offset = parse_b128(data)
-    status, offset = parse_b128(data, offset)
-    if not status:
+    nversion, offset = parse_b128(data)
+    nheight, offset = parse_b128(data, offset)
+    nstatus, offset = parse_b128(data, offset)
+    if not nstatus:
         return None
     ntx, offset = parse_b128(data, offset)
     nfile, offset = parse_b128(data, offset)
