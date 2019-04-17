@@ -232,13 +232,13 @@ def get_blk_n_from_block_data(data: bytes) -> int:
     :param data: a raw block index entry
     :return: number of a blk file (like 12345 in .bitcoin/blocks/blk12345.dat)
     """
-    nversion, offset = parse_b128(data)
-    nheight, offset = parse_b128(data, offset)
-    nstatus, offset = parse_b128(data, offset)
+    nversion, offset = extract_b128(data)
+    nheight, offset = extract_b128(data, offset)
+    nstatus, offset = extract_b128(data, offset)
     if not nstatus:
         return None
-    ntx, offset = parse_b128(data, offset)
-    nfile, offset = parse_b128(data, offset)
+    ntx, offset = extract_b128(data, offset)
+    nfile, offset = extract_b128(data, offset)
     return b128_decode(nfile)
 
 
@@ -261,11 +261,11 @@ def get_blk_max_block_height(blk_n, fin_name) -> int:
         return 0
 
     # parse data directly
-    nBlocks, offset = parse_b128(blk_data)
-    nSize, offset = parse_b128(blk_data, offset)
-    nUndoSize, offset = parse_b128(blk_data, offset)
-    nHeightFirst, offset = parse_b128(blk_data, offset)
-    nHeightLast, offset = parse_b128(blk_data, offset)
+    nBlocks, offset = extract_b128(blk_data)
+    nSize, offset = extract_b128(blk_data, offset)
+    nUndoSize, offset = extract_b128(blk_data, offset)
+    nHeightFirst, offset = extract_b128(blk_data, offset)
+    nHeightLast, offset = extract_b128(blk_data, offset)
 
     return b128_decode(nHeightLast)
 
@@ -342,8 +342,8 @@ def deobfuscate_with_key(o_key: bytes, data: bytes):
 
 
 def make_anyone_can_spend(coin: bytes) -> bytes:
-    code, offset = parse_b128(coin)
-    value, offset = parse_b128(coin, offset)
+    code, offset = extract_b128(coin)
+    value, offset = extract_b128(coin, offset)
 
     new_coin = coin[:offset]
 
@@ -360,14 +360,14 @@ def extract_script(coin: bytes) -> bytes:
     # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
     # height, whether the transaction is coinbase or not, value, script type and script.
     # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
-    code, offset = parse_b128(coin)
+    code, offset = extract_b128(coin)
 
     # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
     # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
-    value, offset = parse_b128(coin, offset)
+    value, offset = extract_b128(coin, offset)
 
     # Finally, we can obtain the data type by parsing the last B128 VARINT
-    out_type, offset = parse_b128(coin, offset)
+    out_type, offset = extract_b128(coin, offset)
     out_type = b128_decode(out_type)
 
     if out_type in [0, 1]:
@@ -418,13 +418,14 @@ def is_native_segwit(script: bytes) -> bool:
     return False, None
 
 
-def parse_b128(b128_data: bytes, offset: int = 0) -> (bytes, int):
-    """ Parses serialized (UTXO) data to extract a base-128 varint.
+def extract_b128(b128_data: bytes, offset: int = 0) -> (bytes, int):
+    """ Extract a base128 varint from a byte array containing such varints
+    (such as serialized UTXO data from the chainstate database).
 
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
-    :param b128_data: Serialized b128_data from which the varint will be parsed.
-    :param offset: Offset where the beginning of the varint if located in the b128_data.
+    :param b128_data: bytes from which the varint will be extracted.
+    :param offset: Offset where the beginning of the varint if located in the byte data.
     :return: The extracted varint, and the offset of the byte located right after it.
     """
     data = bytes()
