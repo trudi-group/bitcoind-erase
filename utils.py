@@ -12,384 +12,17 @@ import bitcoin.rpc
 
 NSPECIALSCRIPTS = 6  # nSpecialScripts from bitcoind's src/compressor.h
 
-
-def txout_compress(n):
-    """ Compresses the Satoshi amount of a UTXO to be stored in the LevelDB. Code is a port from the Bitcoin Core C++
-    source:
-        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L133#L160
-
-    :param n: Satoshi amount to be compressed.
-    :type n: int
-    :return: The compressed amount of Satoshis.
-    :rtype: int
-    """
-
-    if n == 0:
-        return 0
-    e = 0
-    while ((n % 10) == 0) and e < 9:
-        n /= 10
-        e += 1
-
-    if e < 9:
-        d = (n % 10)
-        assert (1 <= d <= 9)
-        n /= 10
-        return 1 + (n * 9 + d - 1) * 10 + e
-    else:
-        return 1 + (n - 1) * 10 + 9
-
-
-def txout_decompress(x):
-    """ Decompresses the Satoshi amount of a UTXO stored in the LevelDB. Code is a port from the Bitcoin Core C++
-    source:
-        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L161#L185
-
-    :param x: Compressed amount to be decompressed.
-    :type x: int
-    :return: The decompressed amount of satoshi.
-    :rtype: int
-    """
-
-    if x == 0:
-        return 0
-    x -= 1
-    e = x % 10
-    x /= 10
-    if e < 9:
-        d = (x % 9) + 1
-        x /= 9
-        n = x * 10 + d
-    else:
-        n = x + 1
-    while e > 0:
-        n *= 10
-        e -= 1
-    return n
-
-
-def b128_encode(n):
-    """ Performs the MSB base-128 encoding of a given value. Used to store variable integers (varints) in the LevelDB.
-    The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
-    one reads directly from the LevelDB.
-
-    The encoding is used to store Satoshi amounts into the Bitcoin LevelDB (chainstate). Before encoding, values are
-    compressed using txout_compress.
-
-    The encoding can also be used to encode block height values into the format use in the LevelDB, however, those are
-    encoded not compressed.
-
-    Explanation can be found in:
-        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L307L329
-    And code:
-        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L343#L358
-
-    The MSB of every byte (x)xxx xxxx encodes whether there is another byte following or not. Hence, all MSB are set to
-    one except from the very last. Moreover, one is subtracted from all but the last digit in order to ensure a
-    one-to-one encoding. Hence, in order decode a value, the MSB is changed from 1 to 0, and 1 is added to the resulting
-    value. Then, the value is multiplied to the respective 128 power and added to the rest.
-
-    Examples:
-
-        - 255 = 807F (0x80 0x7F) --> (1)000 0000 0111 1111 --> 0000 0001 0111 1111 --> 1 * 128 + 127 = 255
-        - 4294967296 (2^32) = 8EFEFEFF (0x8E 0xFE 0xFE 0xFF 0x00) --> (1)000 1110 (1)111 1110 (1)111 1110 (1)111 1111
-            0000 0000 --> 0000 1111 0111 1111 0111 1111 1000 0000 0000 0000 --> 15 * 128^4 + 127*128^3 + 127*128^2 +
-            128*128 + 0 = 2^32
-
-
-    :param n: Value to be encoded.
-    :type n: int
-    :return: The base-128 encoded value
-    :rtype: bytes
-    """
-
-    l = 0
-    tmp = []
-
-    while True:
-        tmp.append(n & 0x7F)
-        if l != 0:
-            tmp[l] |= 0x80
-        if n <= 0x7F:
-            break
-        n = (n >> 7) - 1
-        l += 1
-
-    tmp.reverse()
-    return bytes(tmp)
-
-
-def b128_decode(data):
-    """ Performs the MSB base-128 decoding of a given value. Used to decode variable integers (varints) from the LevelDB.
-    The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
-    one reads directly from the LevelDB.
-
-    The decoding is used to decode Satoshi amounts stored in the Bitcoin LevelDB (chainstate). After decoding, values
-    are decompressed using txout_decompress.
-
-    The decoding can be also used to decode block height values stored in the LevelDB. In his case, values are not
-    compressed.
-
-    Original code can be found in:
-        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L360#L372
-
-    Examples and further explanation can be found in b128_encode function.
-
-    :param data: The base-128 encoded value to be decoded.
-    :type data: bytes
-    :return: The decoded value
-    :rtype: int
-    """
-
-    n = 0
-    i = 0
-    while True:
-        d = data[i]
-        n = n << 7 | d & 0x7F
-        if d & 0x80:
-            n += 1
-            i += 1
-        else:
-            return n
-
-
-def parse_b128(utxo, offset=0):
-    """ Parses a given serialized UTXO to extract a base-128 varint.
-
-    :param utxo: Serialized UTXO from which the varint will be parsed.
-    :type utxo: bytes
-    :param offset: Offset where the beginning of the varint if located in the UTXO.
-    :type offset: int
-    :return: The extracted varint, and the offset of the byte located right after it.
-    :rtype: bytes, int
-    """
-
-    data = bytes()
-    more_bytes = True
-
-    while more_bytes:
-        data += utxo[offset:offset+1]
-        more_bytes = utxo[offset] & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
-        # indicating that there is an additional byte following the one being analyzed. If bit 128 of the byte
-        # being read is not set, we are analyzing the last byte, otherwise, we should continue reading.
-        offset += 1
-
-    return data, offset
-
-
-def make_anyone_can_spend(coin):
-    code, offset = parse_b128(coin)
-    value, offset = parse_b128(coin, offset)
-
-    new_coin = coin[:offset]
-
-    new_out_type = (1 + NSPECIALSCRIPTS)
-    op_true = 0x51
-
-    new_coin += b128_encode(new_out_type) + b128_encode(op_true)
-
-    return new_coin
-
-
-def extract_script(coin):
-
-    # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
-    # height, whether the transaction is coinbase or not, value, script type and script.
-    # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
-    code, offset = parse_b128(coin)
-
-    # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
-    # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
-    value, offset = parse_b128(coin, offset)
-
-    # Finally, we can obtain the data type by parsing the last B128 VARINT
-    out_type, offset = parse_b128(coin, offset)
-    out_type = b128_decode(out_type)
-
-    if out_type in [0, 1]:
-        data_size = 20
-    elif out_type in [2, 3, 4, 5]:
-        data_size = 33  # (1 byte for the type + 32 bytes of data)
-        offset -= 2
-    # Finally, if another value is found, it represents the length of the following data, which is uncompressed.
-    else:
-        data_size = out_type - NSPECIALSCRIPTS  # If the data is not compacted, the out_type corresponds
-        # to the data size adding the number os special scripts (nSpecialScripts).
-
-    # And the remaining data corresponds to the script.
-    script = coin[offset:]
-
-    # Assert that the script hash the expected length
-    assert len(script) == data_size
-
-    return script
-
-
-def get_blk_n_from_block_data(data):
-    """TODO: Docstring for decode_block_data.
-
-    s.a. bitcoind's src/chain.h
-
-    :data: TODO
-    :returns: TODO
-
-    """
-    nversion, offset = parse_b128(data)
-    nheight, offset = parse_b128(data, offset)
-    nstatus, offset = parse_b128(data, offset)
-    if not nstatus:
-        return None
-    ntx, offset = parse_b128(data, offset)
-    nfile, offset = parse_b128(data, offset)
-    return b128_decode(nfile)
-
-
-def get_blk_max_block_height(blk_n, fin_name):
-    """TODO: Docstring for get_blk_max_block_height.
-
-    :blk_n: TODO
-    :returns: TODO
-
-    """
-    prefix = b'f'
-    key = prefix + blk_n.to_bytes(4, byteorder='little')
-
-    # Open the LevelDB
-    db = plyvel.DB(fin_name, compression=None)
-    blk_data = db.get(key)
-    db.close()
-
-    if not blk_data:
-        return 0
-
-    # parse data directly
-    nBlocks, offset = parse_b128(blk_data)
-    nSize, offset = parse_b128(blk_data, offset)
-    nUndoSize, offset = parse_b128(blk_data, offset)
-    nHeightFirst, offset = parse_b128(blk_data, offset)
-    nHeightLast, offset = parse_b128(blk_data, offset)
-
-    return b128_decode(nHeightLast)
-
-
-def decode_utxo(coin, outpoint):
-    """
-    Decodes a LevelDB serialized UTXO for Bitcoin core v 0.15 onwards. The serialized format is defined in the Bitcoin
-    Core source code as outpoint:coin.
-
-    Outpoint structure is as follows: key | tx_hash | index.
-
-    Where the key corresponds to b'C', or 43 in hex. The transaction hash in encoded in Little endian, and the index
-    is a base128 varint. The corresponding Bitcoin Core source code can be found at:
-
-    https://github.com/bitcoin/bitcoin/blob/ea729d55b4dbd17a53ced474a8457d4759cfb5a5/src/txdb.cpp#L40-L53
-
-    On the other hand, a coin if formed by: code | value | out_type | script.
-
-    Where code encodes the block height and whether the tx is coinbase or not, as 2*height + coinbase, the value is
-    a txout_compressed base128 Varint, the out_type is also a base128 Varint, and the script is the remaining data.
-    The corresponding Bitcoin Core soruce code can be found at:
-
-    https://github.com/bitcoin/bitcoin/blob/6c4fecfaf7beefad0d1c3f8520bf50bb515a0716/src/coins.h#L58-L64
-
-    :param coin: The coin to be decoded (extracted from the chainstate)
-    :type coin: str
-    :param outpoint: The outpoint to be decoded (extracted from the chainstate)
-    :type outpoint: str
-    :return; The decoded UTXO.
-    :rtype: dict
-    """
-
-    # First we will parse all the data encoded in the outpoint, that is, the transaction id and index of the utxo.
-    # Check that the input data corresponds to a transaction.
-    assert outpoint[0] == 0x43
-    # Check the provided outpoint has at least the minimum length (1 byte of key code, 32 bytes tx id, 1 byte index)
-    assert len(outpoint) >= 34
-    # Get the transaction id (LE) by parsing the next 32 bytes of the outpoint.
-    tx_id = outpoint[1:33]
-    # Finally get the transaction index by decoding the remaining bytes as a b128 VARINT
-    tx_index = b128_decode(outpoint[33:])
-
-    # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
-    # height, whether the transaction is coinbase or not, value, script type and script.
-    # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
-    code, offset = parse_b128(coin)
-    code = b128_decode(code)
-    height = code >> 1
-    coinbase = code & 0x01
-
-    # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
-    # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
-    data, offset = parse_b128(coin, offset)
-    amount = txout_decompress(b128_decode(data))
-
-    # Finally, we can obtain the data type by parsing the last B128 VARINT
-    out_type, offset = parse_b128(coin, offset)
-    out_type = b128_decode(out_type)
-
-    if out_type in [0, 1]:
-        data_size = 40  # 20 bytes
-    elif out_type in [2, 3, 4, 5]:
-        data_size = 66  # 33 bytes (1 byte for the type + 32 bytes of data)
-        offset -= 2
-    # Finally, if another value is found, it represents the length of the following data, which is uncompressed.
-    else:
-        data_size = (out_type - NSPECIALSCRIPTS) * 2  # If the data is not compacted, the out_type corresponds
-        # to the data size adding the number os special scripts (nSpecialScripts).
-
-    # And the remaining data corresponds to the script.
-    script = coin[offset:]
-
-    # Assert that the script hash the expected length
-    assert len(script) == data_size
-
-    # And to conclude, the output can be encoded. We will store it in a list for backward compatibility with the
-    # previous decoder
-    out = {'amount': amount, 'out_type': out_type, 'data': script}
-
-    # Even though there is just one output, we will identify it as outputs for backward compatibility with the previous
-    # decoder.
-    return {'tx_id': tx_id, 'index': tx_index, 'coinbase': coinbase, 'out': out, 'height': height}
-
-
-def is_opreturn(script):
-    """
-    Checks whether a given script is an OP_RETURN one.
-
-    Warning: there should NOT be any OP_RETURN output in the UTXO set.
-
-    :param script: The script to be checked.
-    :type script: str
-    :return: True if the script is an OP_RETURN, False otherwise.
-    :rtype: bool
-    """
-    op_return_opcode = 0x6a
-    return script[0] == op_return_opcode
-
-
-def is_native_segwit(script):
-    """
-    Checks whether a given output script is a native SegWit type.
-
-    :param script: The script to be checked.
-    :type script: str
-    :return: tuple, (True, segwit type) if the script is a native SegWit, (False, None) otherwise
-    :rtype: tuple, first element boolean
-    """
-
-    if len(script) == 22 and script[:2] == bytes.fromhex("0014"):
-        return True, "P2WPKH"
-
-    if len(script) == 34 and script[:2] == bytes.fromhex("0020"):
-        return True, "P2WSH"
-
-    return False, None
+"""
+Management of UTXOs in chainstate db
+"""
 
 
 def get_utxo(txid_string, index, fin_name):
     """
     Gets a UTXO from the chainstate identified by a given transaction id and index.
     If the requested UTXO does not exist, return None.
+
+    (inspired from https://github.com/sr-gi/bitcoin_tools)
 
     :param txid_string: Transaction ID that identifies the UTXO you are looking for.
     :type txid_string: str
@@ -424,26 +57,6 @@ def get_utxo(txid_string, index, fin_name):
     db.close()
 
     return (outpoint, coin)
-
-
-def get_block_index_entry(block_hash_string, fin_name):
-    """
-    TODO
-    """
-
-    block_hash = bytes.fromhex(block_hash_string)[::-1]  # block hash is little-endian hex string
-
-    prefix = b'b'
-    key = prefix + block_hash
-
-    # Open the LevelDB
-    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
-
-    block_info = db.get(key)
-
-    db.close()
-
-    return block_info
 
 
 # TODO refactor significant code duplication
@@ -517,33 +130,93 @@ def erase_utxos(utxos, data_dir, mode):
         erase_utxo(txid_string, index, chainstate_dir)
 
 
-def deobfuscate_value(obfuscation_key, value):
+def are_utxos_erased(utxos, data_dir, mode='testnet'):
+
+    return all(is_utxo_erased(x, data_dir, mode) for x in utxos)
+
+
+def is_utxo_erased(utxo, data_dir, mode='testnet'):
+
+    (tx_id, index) = utxo
+    fin_name = path.join(data_dir, mode2dir(mode), 'chainstate')
+
+    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
+    if not coin:
+        return True
+    else:
+        return (coin == make_anyone_can_spend(coin))
+
+
+"""
+Management of block data
+"""
+
+
+def get_block_index_entry(block_hash_string, fin_name):
     """
-    De-obfuscate a given value parsed from the chainstate.
-
-    :param obfuscation_key: Key used to obfuscate the given value (extracted from the chainstate).
-    :type obfuscation_key: str
-    :param value: Obfuscated value.
-    :type value: str
-    :return: The de-obfuscated value.
-    :rtype: str.
+    TODO
     """
 
-    if not obfuscation_key:
-        return value
+    block_hash = bytes.fromhex(block_hash_string)[::-1]  # block hash is little-endian hex string
 
-    l_value = len(value)
-    l_obf = len(obfuscation_key)
+    prefix = b'b'
+    key = prefix + block_hash
 
-    # Get the extended obfuscation key by concatenating the obfuscation key with itself until it is as large as the
-    # value to be de-obfuscated.
-    extended_key = (obfuscation_key * (int(l_value / l_obf) + 1))[:l_value]
+    # Open the LevelDB
+    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
 
-    r = bytes([v ^ k for (v, k) in zip(value, extended_key)])
+    block_info = db.get(key)
 
-    assert len(value) == len(r)
+    db.close()
 
-    return r
+    return block_info
+
+
+def get_blk_n_from_block_data(data):
+    """TODO: Docstring for decode_block_data.
+
+    s.a. bitcoind's src/chain.h
+
+    :data: TODO
+    :returns: TODO
+
+    """
+    nversion, offset = parse_b128(data)
+    nheight, offset = parse_b128(data, offset)
+    nstatus, offset = parse_b128(data, offset)
+    if not nstatus:
+        return None
+    ntx, offset = parse_b128(data, offset)
+    nfile, offset = parse_b128(data, offset)
+    return b128_decode(nfile)
+
+
+def get_blk_max_block_height(blk_n, fin_name):
+    """TODO: Docstring for get_blk_max_block_height.
+
+    :blk_n: TODO
+    :returns: TODO
+
+    """
+    prefix = b'f'
+    key = prefix + blk_n.to_bytes(4, byteorder='little')
+
+    # Open the LevelDB
+    db = plyvel.DB(fin_name, compression=None)
+    blk_data = db.get(key)
+    db.close()
+
+    if not blk_data:
+        return 0
+
+    # parse data directly
+    nBlocks, offset = parse_b128(blk_data)
+    nSize, offset = parse_b128(blk_data, offset)
+    nUndoSize, offset = parse_b128(blk_data, offset)
+    nHeightFirst, offset = parse_b128(blk_data, offset)
+    nHeightLast, offset = parse_b128(blk_data, offset)
+
+    return b128_decode(nHeightLast)
 
 
 def get_min_height_to_prune_to(block_hash_string, data_dir, mode='testnet'):
@@ -573,23 +246,6 @@ def are_blks_erased(block_hashes, data_dir, mode='testnet'):
     return lowest_stored_blk_n > highest_bad_blk_n
 
 
-def are_utxos_erased(utxos, data_dir, mode='testnet'):
-
-    return all(is_utxo_erased(x, data_dir, mode) for x in utxos)
-
-
-def is_utxo_erased(utxo, data_dir, mode='testnet'):
-
-    (tx_id, index) = utxo
-    fin_name = path.join(data_dir, mode2dir(mode), 'chainstate')
-
-    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
-    if not coin:
-        return True
-    else:
-        return (coin == make_anyone_can_spend(coin))
-
-
 def get_heighest_bad_blk_n(block_hashes, data_dir, mode='testnet'):
 
     fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
@@ -606,9 +262,289 @@ def prune_up_to(height, btc_conf_file, mode='testnet'):
     proxy.call('pruneblockchain', height)
 
 
+"""
+General helpers
+"""
+
+
 def mode2dir(mode):
     return {
             'mainnet': '.',
             'testnet': 'testnet3',
             'regtest': 'regtest',
             }[mode]
+
+
+"""
+Lower-level parsing and altering
+"""
+
+
+def deobfuscate_value(obfuscation_key, value):
+    """
+    De-obfuscate a given value parsed from the chainstate.
+
+    :param obfuscation_key: Key used to obfuscate the given value (extracted from the chainstate).
+    :type obfuscation_key: str
+    :param value: Obfuscated value.
+    :type value: str
+    :return: The de-obfuscated value.
+    :rtype: str.
+    """
+
+    if not obfuscation_key:
+        return value
+
+    l_value = len(value)
+    l_obf = len(obfuscation_key)
+
+    # Get the extended obfuscation key by concatenating the obfuscation key with itself until it is as large as the
+    # value to be de-obfuscated.
+    extended_key = (obfuscation_key * (int(l_value / l_obf) + 1))[:l_value]
+
+    r = bytes([v ^ k for (v, k) in zip(value, extended_key)])
+
+    assert len(value) == len(r)
+
+    return r
+
+
+def make_anyone_can_spend(coin):
+    code, offset = parse_b128(coin)
+    value, offset = parse_b128(coin, offset)
+
+    new_coin = coin[:offset]
+
+    new_out_type = (1 + NSPECIALSCRIPTS)
+    op_true = 0x51
+
+    new_coin += b128_encode(new_out_type) + b128_encode(op_true)
+
+    return new_coin
+
+
+def extract_script(coin):
+
+    # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
+    # height, whether the transaction is coinbase or not, value, script type and script.
+    # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
+    code, offset = parse_b128(coin)
+
+    # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
+    # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
+    value, offset = parse_b128(coin, offset)
+
+    # Finally, we can obtain the data type by parsing the last B128 VARINT
+    out_type, offset = parse_b128(coin, offset)
+    out_type = b128_decode(out_type)
+
+    if out_type in [0, 1]:
+        data_size = 20
+    elif out_type in [2, 3, 4, 5]:
+        data_size = 33  # (1 byte for the type + 32 bytes of data)
+        offset -= 2
+    # Finally, if another value is found, it represents the length of the following data, which is uncompressed.
+    else:
+        data_size = out_type - NSPECIALSCRIPTS  # If the data is not compacted, the out_type corresponds
+        # to the data size adding the number os special scripts (nSpecialScripts).
+
+    # And the remaining data corresponds to the script.
+    script = coin[offset:]
+
+    # Assert that the script hash the expected length
+    assert len(script) == data_size
+
+    return script
+
+
+def is_opreturn(script):
+    """
+    Checks whether a given script is an OP_RETURN one.
+
+    Warning: there should NOT be any OP_RETURN output in the UTXO set.
+
+    :param script: The script to be checked.
+    :type script: str
+    :return: True if the script is an OP_RETURN, False otherwise.
+    :rtype: bool
+    """
+    op_return_opcode = 0x6a
+    return script[0] == op_return_opcode
+
+
+def is_native_segwit(script):
+    """
+    Checks whether a given output script is a native SegWit type.
+
+    :param script: The script to be checked.
+    :type script: str
+    :return: tuple, (True, segwit type) if the script is a native SegWit, (False, None) otherwise
+    :rtype: tuple, first element boolean
+    """
+
+    if len(script) == 22 and script[:2] == bytes.fromhex("0014"):
+        return True, "P2WPKH"
+
+    if len(script) == 34 and script[:2] == bytes.fromhex("0020"):
+        return True, "P2WSH"
+
+    return False, None
+
+
+def parse_b128(utxo, offset=0):
+    """ Parses a given serialized UTXO to extract a base-128 varint.
+
+    (originally from https://github.com/sr-gi/bitcoin_tools)
+
+    :param utxo: Serialized UTXO from which the varint will be parsed.
+    :type utxo: bytes
+    :param offset: Offset where the beginning of the varint if located in the UTXO.
+    :type offset: int
+    :return: The extracted varint, and the offset of the byte located right after it.
+    :rtype: bytes, int
+    """
+
+    data = bytes()
+    more_bytes = True
+
+    while more_bytes:
+        data += utxo[offset:offset+1]
+        more_bytes = utxo[offset] & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
+        # indicating that there is an additional byte following the one being analyzed. If bit 128 of the byte
+        # being read is not set, we are analyzing the last byte, otherwise, we should continue reading.
+        offset += 1
+
+    return data, offset
+
+
+def b128_encode(n):
+    """ Performs the MSB base-128 encoding of a given value. Used to store variable integers (varints) in the LevelDB.
+    The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
+    one reads directly from the LevelDB.
+
+    The encoding is used to store Satoshi amounts into the Bitcoin LevelDB (chainstate). Before encoding, values are
+    compressed using txout_compress.
+
+    The encoding can also be used to encode block height values into the format use in the LevelDB, however, those are
+    encoded not compressed.
+
+    Explanation can be found in:
+        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L307L329
+    And code:
+        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L343#L358
+
+    (originally from https://github.com/sr-gi/bitcoin_tools)
+
+    :param n: Value to be encoded.
+    :type n: int
+    :return: The base-128 encoded value
+    :rtype: bytes
+    """
+
+    l = 0
+    tmp = []
+
+    while True:
+        tmp.append(n & 0x7F)
+        if l != 0:
+            tmp[l] |= 0x80
+        if n <= 0x7F:
+            break
+        n = (n >> 7) - 1
+        l += 1
+
+    tmp.reverse()
+    return bytes(tmp)
+
+
+def b128_decode(data):
+    """ Performs the MSB base-128 decoding of a given value. Used to decode variable integers (varints) from the LevelDB.
+    The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
+    one reads directly from the LevelDB.
+
+    The decoding is used to decode Satoshi amounts stored in the Bitcoin LevelDB (chainstate). After decoding, values
+    are decompressed using txout_decompress.
+
+    The decoding can be also used to decode block height values stored in the LevelDB. In his case, values are not
+    compressed.
+
+    Original code can be found in:
+        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/serialize.h#L360#L372
+
+    (originally from https://github.com/sr-gi/bitcoin_tools)
+
+    :param data: The base-128 encoded value to be decoded.
+    :type data: bytes
+    :return: The decoded value
+    :rtype: int
+    """
+
+    n = 0
+    i = 0
+    while True:
+        d = data[i]
+        n = n << 7 | d & 0x7F
+        if d & 0x80:
+            n += 1
+            i += 1
+        else:
+            return n
+
+
+def txout_compress(n):
+    """ Compresses the Satoshi amount of a UTXO to be stored in the LevelDB. Code is a port from the Bitcoin Core C++
+    source:
+        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L133#L160
+
+    (originally from https://github.com/sr-gi/bitcoin_tools)
+
+    :param n: Satoshi amount to be compressed.
+    :type n: int
+    :return: The compressed amount of Satoshis.
+    :rtype: int
+    """
+
+    if n == 0:
+        return 0
+    e = 0
+    while ((n % 10) == 0) and e < 9:
+        n /= 10
+        e += 1
+
+    if e < 9:
+        d = (n % 10)
+        assert (1 <= d <= 9)
+        n /= 10
+        return 1 + (n * 9 + d - 1) * 10 + e
+    else:
+        return 1 + (n - 1) * 10 + 9
+
+
+def txout_decompress(x):
+    """ Decompresses the Satoshi amount of a UTXO stored in the LevelDB. Code is a port from the Bitcoin Core C++
+    source:
+        https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L161#L185
+
+    (originally from https://github.com/sr-gi/bitcoin_tools)
+
+    :param x: Compressed amount to be decompressed.
+    :type x: int
+    :return: The decompressed amount of satoshi.
+    :rtype: int
+    """
+
+    if x == 0:
+        return 0
+    x -= 1
+    e = x % 10
+    x /= 10
+    if e < 9:
+        d = (x % 9) + 1
+        x /= 9
+        n = x * 10 + d
+    else:
+        n = x + 1
+    while e > 0:
+        n *= 10
+        e -= 1
+    return n
