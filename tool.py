@@ -29,12 +29,13 @@ def main():
         interactive_erase(erase_target, data_dir, mode)
 
 
-def check(erase_target, data_dir, mode):
-    """ Check if desired data is erased
+def check(erase_target, data_dir: str, mode: str) -> bool:
+    """ Check whether desired data is erased
 
-    :erase_target: TODO
-    :returns: TODO
-
+    :erase_target { blockhash -> { txid -> [ outpoint_index ] }
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    :return: true if erased, false if not
     """
     block_hashes = erase_target.keys()
     if not utils.are_blks_erased(block_hashes, data_dir, mode):
@@ -47,8 +48,13 @@ def check(erase_target, data_dir, mode):
     return True
 
 
-def interactive_erase(erase_target, data_dir, mode, print_function=print, input_function=input):
+def interactive_erase(erase_target, data_dir: str, mode: str, print_function=print, input_function=input):
+    """ Erase outputs with user interaction.
 
+    :erase_target { blockhash -> { txid -> [ outpoint_index ] }
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    """
     utxos = get_target_utxos(erase_target)
     block_hashes = erase_target.keys()
 

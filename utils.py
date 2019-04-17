@@ -17,7 +17,7 @@ Management of UTXOs in chainstate db
 """
 
 
-def get_utxo(txid_string, index, fin_name):
+def get_utxo(txid_string: str, index: int, fin_name: str) -> (bytes, bytes):
     """
     Gets a UTXO from the chainstate identified by a given transaction id and index.
     If the requested UTXO does not exist, return None.
@@ -25,122 +25,109 @@ def get_utxo(txid_string, index, fin_name):
     (inspired from https://github.com/sr-gi/bitcoin_tools)
 
     :param txid_string: Transaction ID that identifies the UTXO you are looking for.
-    :type txid_string: str
     :param index: Index that identifies the specific output.
-    :type index: int
-    :param fin_name: Name of the LevelDB folder (chainstate by default)
-    :type fin_name: str
-    :return: A outpoint:coin pair representing the requested UTXO
-    :rtype: (byte, byte)
+    :param fin_name: Name of the LevelDB folder
+    :return: An (outpoint, coin) pair representing the requested UTXO
     """
-
-    prefix = b'C'
-    txid = bytes.fromhex(txid_string)[::-1]  # TXIDs are little-endian hex strings
-    outpoint = prefix + txid + b128_encode(index)
+    outpoint = build_utxo_outpoint(txid_string, index)
 
     # Open the LevelDB
-    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
-
-    # Load obfuscation key (if it exists)
-    o_key = db.get((bytes.fromhex('0e00') + b'obfuscate_key'))
-
-    # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
-    # 8-byte zeros are used (since the key will be XORed with the given values).
-    if o_key is not None:
-        o_key = o_key[1:]
+    db = plyvel.DB(fin_name, compression=None)
 
     coin = db.get(outpoint)
 
-    if coin is not None and o_key is not None:
-        coin = deobfuscate_value(o_key, coin)
+    if coin is not None:
+        coin = deobfuscate_with_db(db, coin)
 
     db.close()
 
     return (outpoint, coin)
 
 
-# TODO refactor significant code duplication
-def put_utxo(coin, txid_string, index, fin_name):
+def put_utxo(coin: bytes, txid_string: str, index: int, fin_name: str):
     """
     Puts a UTXO into the chainstate under a given transaction id and index.
 
-    :param coin: Serialized coin to put
-    :type coin: bytes
-    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
-    :type txid_string: str
-    :param index: Index that identifies the specific output.
-    :type index: int
-    :param fin_name: Name of the LevelDB folder (chainstate by default)
-    :type fin_name: str
-    :return:
-    :rtype:
-    """
+    (inspired from https://github.com/sr-gi/bitcoin_tools)
 
-    prefix = b'C'
-    txid = bytes.fromhex(txid_string)[::-1]  # TXIDs are little-endian hex strings
-    outpoint = prefix + txid + b128_encode(index)
+    :param coin: Serialized coin to put
+    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
+    :param index: Index that identifies the specific output.
+    :param fin_name: Name of the LevelDB folder
+    """
+    outpoint = build_utxo_outpoint(txid_string, index)
 
     # Open the LevelDB
-    db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
+    db = plyvel.DB(fin_name, compression=None)
 
-    # Load obfuscation key (if it exists)
-    o_key = db.get((bytes.fromhex('0e00') + b'obfuscate_key'))
-
-    # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
-    # 8-byte zeros are used (since the key will be XORed with the given values).
-    if o_key is not None:
-        o_key = o_key[1:]
-
-    coin = deobfuscate_value(o_key, coin)
+    coin = obfuscate_with_db(db, coin)
 
     db.put(outpoint, coin)
 
     db.close()
 
-    return (outpoint, coin)
+
+"""
+Erasure of UTXOs (i.e., replacing them with an "anyone can spend" outputs to
+avoid forks on potential future blocks that spend from them)
+"""
 
 
-def erase_utxo(txid_string, index, fin_name):
+def erase_utxos(utxos, data_dir: str, mode: str = 'testnet'):
     """
-    Erase UTXO from chainstate database.
+    Erase multiple UTXOs from chainstate database.
 
-    TODO
-
-    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
-    :type txid_string: str
-    :param index: Index that identifies the specific output.
-    :type index: int
-    :param fin_name: Name of the LevelDB folder (chainstate by default)
-    :type fin_name: str
-    :return:
-    :rtype:
+    :param utxos: txid:index pairs to be erased.
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
     """
-
-    (outpoint, coin) = get_utxo(txid_string, index, fin_name)
-    if coin:
-        new_coin = make_anyone_can_spend(coin)
-        put_utxo(new_coin, txid_string, index, fin_name)
-
-
-def erase_utxos(utxos, data_dir, mode):
-
     chainstate_dir = path.join(data_dir, mode2dir(mode), 'chainstate')
 
     for (txid_string, index) in utxos:
         erase_utxo(txid_string, index, chainstate_dir)
 
 
-def are_utxos_erased(utxos, data_dir, mode='testnet'):
+def are_utxos_erased(utxos, data_dir: str, mode: str = 'testnet') -> bool:
+    """
+    Check if list of UTXOs are erased from chainstate database.
 
-    return all(is_utxo_erased(x, data_dir, mode) for x in utxos)
+    :param utxos: txid:index pairs to be erased.
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    :returns: whether all utxos are erased
+    """
+    chainstate_dir = path.join(data_dir, mode2dir(mode), 'chainstate')
+
+    return all(is_utxo_erased(*x, chainstate_dir) for x in utxos)
 
 
-def is_utxo_erased(utxo, data_dir, mode='testnet'):
+def erase_utxo(txid_string: str, index: int, fin_name: str):
+    """
+    Erase one UTXO, represented by a txid:index pair, from the chainstate database.
+    (Replacing it with an "anyone can spend" output to avoid forks on blocks
+    spending from that output.)
 
-    (tx_id, index) = utxo
-    fin_name = path.join(data_dir, mode2dir(mode), 'chainstate')
+    :param txid_string: Transaction ID that identifies the UTXO to be erased.
+    :param index: Index that identifies the specific output.
+    :param fin_name: Name of the LevelDB folder
+    """
+    (outpoint, coin) = get_utxo(txid_string, index, fin_name)
+    if coin:
+        new_coin = make_anyone_can_spend(coin)
+        put_utxo(new_coin, txid_string, index, fin_name)
 
-    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
+
+def is_utxo_erased(txid_string: str, index: int, fin_name: str) -> bool:
+    """
+    Check if one UTXO, represented by a txid:index pair, is erased from the
+    chainstate database.
+
+    :param txid_string: Transaction ID that identifies the UTXO to be erased.
+    :param index: Index that identifies the specific output.
+    :param fin_name: Name of the LevelDB folder
+    :returns: whether the utxo is erased
+    """
+    (outpoint, coin) = get_utxo(txid_string, index, fin_name)
     if not coin:
         return True
     else:
@@ -152,11 +139,75 @@ Management of block data
 """
 
 
-def get_block_index_entry(block_hash_string, fin_name):
-    """
-    TODO
-    """
+def prune_up_to(height: int, btc_conf_file: str, mode: str = 'testnet'):
+    """Tell bitcoind to prune up to given block height (via RPC call).
 
+    :param height: block height to prune to
+    :param btc_conf_file: path to bitcoind config file
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    """
+    bitcoin.SelectParams(mode)
+
+    proxy = bitcoin.rpc.Proxy(btc_conf_file=btc_conf_file)
+
+    # TODO if fails, shows meaningful error message? (that user needs to turn on prune, e.g.)
+    proxy.call('pruneblockchain', height)
+
+
+def get_min_height_to_prune_to(block_hash_string: str, data_dir: str, mode: str = 'testnet') -> int:
+    """Get minimum height to prune to in order for the block identified by
+    block_hash_string to be physically erased from disk.
+
+    :param block_hash_string: hash of the block
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    :return: minimum height to prune to, or 0 if block not found
+    """
+    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
+
+    blk_n = get_blk_n_from_block_data(get_block_index_entry(block_hash_string, fin_name))
+    return get_blk_max_block_height(blk_n, fin_name) if blk_n else 0
+
+
+def are_blks_erased(block_hashes, data_dir: str, mode: str = 'testnet') -> bool:
+    """Check if the blk files containing the given blocks are physically erased
+    from disk.
+
+    :param block_hashes: block hashes to check
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    :return: whether blk files are already pruned
+    """
+    # FIXME crashes if block_hash unknown (really?)
+    highest_bad_blk_n = get_heighest_bad_blk_n(block_hashes, data_dir, mode)
+
+    blocks_path = path.join(data_dir, mode2dir(mode), 'blocks')
+
+    lowest_stored_files = [sorted(glob.glob(path.join(blocks_path, regexp)))[0] for regexp in ['blk*.dat', 'rev*.dat']]
+    lowest_stored_blk_n = all([int(re.findall(r'\d+', x)[0]) for x in lowest_stored_files])
+
+    return lowest_stored_blk_n > highest_bad_blk_n
+
+
+def get_heighest_bad_blk_n(block_hashes, data_dir: str, mode: str = 'testnet') -> int:
+    """Get the largest .blk file number containing an unwanted block.
+
+    :param block_hashes: block hashes of unwanted blocks
+    :param data_dir: path to bitcoind data dir
+    :param mode: the target chain/network (mainnet / testnet / regtest)
+    :return: number of a blk file (like 12345 in .bitcoin/blocks/blk12345.dat)
+    """
+    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
+    return max(map(lambda x: get_blk_n_from_block_data(get_block_index_entry(x, fin_name)), block_hashes))
+
+
+def get_block_index_entry(block_hash_string: str, fin_name: str) -> bytes:
+    """Get block infos from the block index database
+
+    :param block_hash_string: hash of the block
+    :param fin_name: Name of the LevelDB folder for the block index database
+    :return: a raw block index entry
+    """
     block_hash = bytes.fromhex(block_hash_string)[::-1]  # block hash is little-endian hex string
 
     prefix = b'b'
@@ -172,14 +223,14 @@ def get_block_index_entry(block_hash_string, fin_name):
     return block_info
 
 
-def get_blk_n_from_block_data(data):
-    """TODO: Docstring for decode_block_data.
+def get_blk_n_from_block_data(data: bytes) -> int:
+    """Parse block infos from the block index database to get the .blk file
+    number where the block is stored.
 
     s.a. bitcoind's src/chain.h
 
-    :data: TODO
-    :returns: TODO
-
+    :param data: a raw block index entry
+    :return: number of a blk file (like 12345 in .bitcoin/blocks/blk12345.dat)
     """
     nversion, offset = parse_b128(data)
     nheight, offset = parse_b128(data, offset)
@@ -191,11 +242,11 @@ def get_blk_n_from_block_data(data):
     return b128_decode(nfile)
 
 
-def get_blk_max_block_height(blk_n, fin_name):
-    """TODO: Docstring for get_blk_max_block_height.
+def get_blk_max_block_height(blk_n, fin_name) -> int:
+    """Get the highest block number stored in the .blk file with the given number.
 
-    :blk_n: TODO
-    :returns: TODO
+    :param blk_n: number of a blk file (like 12345 in .bitcoin/blocks/blk12345.dat)
+    :returns: a block height
 
     """
     prefix = b'f'
@@ -219,49 +270,6 @@ def get_blk_max_block_height(blk_n, fin_name):
     return b128_decode(nHeightLast)
 
 
-def get_min_height_to_prune_to(block_hash_string, data_dir, mode='testnet'):
-    """TODO: Docstring for get_min_height_to_prune_to.
-
-    :data_dir: TODO
-    :mode: TODO
-    :returns: TODO
-
-    """
-    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
-
-    blk_n = get_blk_n_from_block_data(get_block_index_entry(block_hash_string, fin_name))
-    return get_blk_max_block_height(blk_n, fin_name) if blk_n else 0
-
-
-def are_blks_erased(block_hashes, data_dir, mode='testnet'):
-
-    # FIXME crashes if block_hash unknown (really?)
-    highest_bad_blk_n = get_heighest_bad_blk_n(block_hashes, data_dir, mode)
-
-    blocks_path = path.join(data_dir, mode2dir(mode), 'blocks')
-
-    lowest_stored_files = [sorted(glob.glob(path.join(blocks_path, regexp)))[0] for regexp in ['blk*.dat', 'rev*.dat']]
-    lowest_stored_blk_n = all([int(re.findall(r'\d+', x)[0]) for x in lowest_stored_files])
-
-    return lowest_stored_blk_n > highest_bad_blk_n
-
-
-def get_heighest_bad_blk_n(block_hashes, data_dir, mode='testnet'):
-
-    fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
-    return max(map(lambda x: get_blk_n_from_block_data(get_block_index_entry(x, fin_name)), block_hashes))
-
-
-def prune_up_to(height, btc_conf_file, mode='testnet'):
-
-    bitcoin.SelectParams(mode)
-
-    proxy = bitcoin.rpc.Proxy(btc_conf_file=btc_conf_file)
-
-    # TODO if fails, shows meaningful error message? (that user needs to turn on prune, e.g.)
-    proxy.call('pruneblockchain', height)
-
-
 """
 General helpers
 """
@@ -280,36 +288,60 @@ Lower-level parsing and altering
 """
 
 
-def deobfuscate_value(obfuscation_key, value):
+def build_utxo_outpoint(txid_string: str, index: int) -> bytes:
+    prefix = b'C'
+    txid = bytes.fromhex(txid_string)[::-1]  # TXIDs are little-endian hex strings
+    return prefix + txid + b128_encode(index)
+
+
+def obfuscate_with_key(o_key: bytes, data: bytes) -> bytes:
+    return deobfuscate_with_key(o_key, data)
+
+
+def obfuscate_with_db(db: plyvel.DB, data: bytes) -> bytes:
+    return deobfuscate_with_db(db, data)
+
+
+def deobfuscate_with_db(db: plyvel.DB, data: bytes) -> bytes:
+
+    # Load obfuscation key (if it exists)
+    o_key = db.get((bytes.fromhex('0e00') + b'obfuscate_key'))
+
+    # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
+    # 8-byte zeros are used (since the key will be XORed with the given values).
+    if o_key is not None:
+        o_key = o_key[1:]
+
+    return deobfuscate_with_key(o_key, data)
+
+
+def deobfuscate_with_key(o_key: bytes, data: bytes):
     """
-    De-obfuscate a given value parsed from the chainstate.
+    De-obfuscate data from the chainstate DB.
 
-    :param obfuscation_key: Key used to obfuscate the given value (extracted from the chainstate).
-    :type obfuscation_key: str
-    :param value: Obfuscated value.
-    :type value: str
-    :return: The de-obfuscated value.
-    :rtype: str.
+    :param o_key: Key used to obfuscate the given data (extracted from the chainstate).
+    :param data: Obfuscated data.
+    :return: The de-obfuscated data.
     """
 
-    if not obfuscation_key:
-        return value
+    if not o_key:
+        return data
 
-    l_value = len(value)
-    l_obf = len(obfuscation_key)
+    l_data = len(data)
+    l_o_key = len(o_key)
 
     # Get the extended obfuscation key by concatenating the obfuscation key with itself until it is as large as the
-    # value to be de-obfuscated.
-    extended_key = (obfuscation_key * (int(l_value / l_obf) + 1))[:l_value]
+    # data to be de-obfuscated.
+    extended_key = (o_key * (int(l_data / l_o_key) + 1))[:l_data]
 
-    r = bytes([v ^ k for (v, k) in zip(value, extended_key)])
+    r = bytes([v ^ k for (v, k) in zip(data, extended_key)])
 
-    assert len(value) == len(r)
+    assert len(data) == len(r)
 
     return r
 
 
-def make_anyone_can_spend(coin):
+def make_anyone_can_spend(coin: bytes) -> bytes:
     code, offset = parse_b128(coin)
     value, offset = parse_b128(coin, offset)
 
@@ -323,7 +355,7 @@ def make_anyone_can_spend(coin):
     return new_coin
 
 
-def extract_script(coin):
+def extract_script(coin: bytes) -> bytes:
 
     # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
     # height, whether the transaction is coinbase or not, value, script type and script.
@@ -357,31 +389,26 @@ def extract_script(coin):
     return script
 
 
-def is_opreturn(script):
+def is_opreturn(script: bytes) -> bool:
     """
     Checks whether a given script is an OP_RETURN one.
 
     Warning: there should NOT be any OP_RETURN output in the UTXO set.
 
     :param script: The script to be checked.
-    :type script: str
     :return: True if the script is an OP_RETURN, False otherwise.
-    :rtype: bool
     """
     op_return_opcode = 0x6a
     return script[0] == op_return_opcode
 
 
-def is_native_segwit(script):
+def is_native_segwit(script: bytes) -> bool:
     """
     Checks whether a given output script is a native SegWit type.
 
     :param script: The script to be checked.
-    :type script: str
     :return: tuple, (True, segwit type) if the script is a native SegWit, (False, None) otherwise
-    :rtype: tuple, first element boolean
     """
-
     if len(script) == 22 and script[:2] == bytes.fromhex("0014"):
         return True, "P2WPKH"
 
@@ -391,25 +418,21 @@ def is_native_segwit(script):
     return False, None
 
 
-def parse_b128(utxo, offset=0):
-    """ Parses a given serialized UTXO to extract a base-128 varint.
+def parse_b128(b128_data: bytes, offset: int = 0) -> (bytes, int):
+    """ Parses serialized (UTXO) data to extract a base-128 varint.
 
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
-    :param utxo: Serialized UTXO from which the varint will be parsed.
-    :type utxo: bytes
-    :param offset: Offset where the beginning of the varint if located in the UTXO.
-    :type offset: int
+    :param b128_data: Serialized b128_data from which the varint will be parsed.
+    :param offset: Offset where the beginning of the varint if located in the b128_data.
     :return: The extracted varint, and the offset of the byte located right after it.
-    :rtype: bytes, int
     """
-
     data = bytes()
     more_bytes = True
 
     while more_bytes:
-        data += utxo[offset:offset+1]
-        more_bytes = utxo[offset] & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
+        data += b128_data[offset:offset+1]
+        more_bytes = b128_data[offset] & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
         # indicating that there is an additional byte following the one being analyzed. If bit 128 of the byte
         # being read is not set, we are analyzing the last byte, otherwise, we should continue reading.
         offset += 1
@@ -417,7 +440,7 @@ def parse_b128(utxo, offset=0):
     return data, offset
 
 
-def b128_encode(n):
+def b128_encode(n: int) -> bytes:
     """ Performs the MSB base-128 encoding of a given value. Used to store variable integers (varints) in the LevelDB.
     The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
     one reads directly from the LevelDB.
@@ -436,11 +459,8 @@ def b128_encode(n):
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
     :param n: Value to be encoded.
-    :type n: int
     :return: The base-128 encoded value
-    :rtype: bytes
     """
-
     l = 0
     tmp = []
 
@@ -457,7 +477,7 @@ def b128_encode(n):
     return bytes(tmp)
 
 
-def b128_decode(data):
+def b128_decode(data: bytes) -> int:
     """ Performs the MSB base-128 decoding of a given value. Used to decode variable integers (varints) from the LevelDB.
     The code is a port from the Bitcoin Core C++ source. Notice that the code is not exactly the same since the original
     one reads directly from the LevelDB.
@@ -474,11 +494,8 @@ def b128_decode(data):
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
     :param data: The base-128 encoded value to be decoded.
-    :type data: bytes
     :return: The decoded value
-    :rtype: int
     """
-
     n = 0
     i = 0
     while True:
@@ -491,7 +508,7 @@ def b128_decode(data):
             return n
 
 
-def txout_compress(n):
+def txout_compress(n: int) -> int:
     """ Compresses the Satoshi amount of a UTXO to be stored in the LevelDB. Code is a port from the Bitcoin Core C++
     source:
         https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L133#L160
@@ -499,11 +516,8 @@ def txout_compress(n):
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
     :param n: Satoshi amount to be compressed.
-    :type n: int
     :return: The compressed amount of Satoshis.
-    :rtype: int
     """
-
     if n == 0:
         return 0
     e = 0
@@ -520,7 +534,7 @@ def txout_compress(n):
         return 1 + (n - 1) * 10 + 9
 
 
-def txout_decompress(x):
+def txout_decompress(x: int) -> int:
     """ Decompresses the Satoshi amount of a UTXO stored in the LevelDB. Code is a port from the Bitcoin Core C++
     source:
         https://github.com/bitcoin/bitcoin/blob/v0.13.2/src/compressor.cpp#L161#L185
@@ -528,11 +542,8 @@ def txout_decompress(x):
     (originally from https://github.com/sr-gi/bitcoin_tools)
 
     :param x: Compressed amount to be decompressed.
-    :type x: int
     :return: The decompressed amount of satoshi.
-    :rtype: int
     """
-
     if x == 0:
         return 0
     x -= 1
