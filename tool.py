@@ -37,11 +37,11 @@ def check(erase_target, data_dir, mode):
 
     """
     block_hashes = erase_target.keys()
-    if not utils.check_if_blks_erased(block_hashes, data_dir, mode):
+    if not utils.are_blks_erased(block_hashes, data_dir, mode):
         return False
 
     utxos = get_target_utxos(erase_target)
-    if not utils.check_if_utxos_erased(utxos, data_dir, mode):
+    if not utils.are_utxos_erased(utxos, data_dir, mode):
         return False
 
     return True

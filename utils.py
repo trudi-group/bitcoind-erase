@@ -6,9 +6,6 @@ import re
 
 import plyvel
 
-from binascii import hexlify, unhexlify  # TODO still need these?
-from bitcoin.core import lx, x
-
 import bitcoin
 import bitcoin.rpc
 
@@ -103,12 +100,11 @@ def b128_encode(n):
     :param n: Value to be encoded.
     :type n: int
     :return: The base-128 encoded value
-    :rtype: hex str
+    :rtype: bytes
     """
 
     l = 0
     tmp = []
-    data = ""
 
     while True:
         tmp.append(n & 0x7F)
@@ -120,9 +116,7 @@ def b128_encode(n):
         l += 1
 
     tmp.reverse()
-    for i in tmp:
-        data += format(i, '02x')
-    return data
+    return bytes(tmp)
 
 
 def b128_decode(data):
@@ -142,7 +136,7 @@ def b128_decode(data):
     Examples and further explanation can be found in b128_encode function.
 
     :param data: The base-128 encoded value to be decoded.
-    :type data: hex str
+    :type data: bytes
     :return: The decoded value
     :rtype: int
     """
@@ -150,7 +144,7 @@ def b128_decode(data):
     n = 0
     i = 0
     while True:
-        d = int(data[2 * i:2 * i + 2], 16)
+        d = data[i]
         n = n << 7 | d & 0x7F
         if d & 0x80:
             n += 1
@@ -163,22 +157,22 @@ def parse_b128(utxo, offset=0):
     """ Parses a given serialized UTXO to extract a base-128 varint.
 
     :param utxo: Serialized UTXO from which the varint will be parsed.
-    :type utxo: hex str
+    :type utxo: bytes
     :param offset: Offset where the beginning of the varint if located in the UTXO.
     :type offset: int
     :return: The extracted varint, and the offset of the byte located right after it.
-    :rtype: hex str, int
+    :rtype: bytes, int
     """
 
-    data = utxo[offset:offset+2]
-    offset += 2
-    more_bytes = int(data, 16) & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
-    # indicating that there is an additional byte following the one being analyzed. If bit 128 of the byte being read is
-    # not set, we are analyzing the last byte, otherwise, we should continue reading.
+    data = bytes()
+    more_bytes = True
+
     while more_bytes:
-        data += utxo[offset:offset+2]
-        more_bytes = int(utxo[offset:offset+2], 16) & 0x80
-        offset += 2
+        data += utxo[offset:offset+1]
+        more_bytes = utxo[offset] & 0x80  # MSB b128 Varints have set the bit 128 for every byte but the last one,
+        # indicating that there is an additional byte following the one being analyzed. If bit 128 of the byte
+        # being read is not set, we are analyzing the last byte, otherwise, we should continue reading.
+        offset += 1
 
     return data, offset
 
@@ -203,24 +197,23 @@ def extract_script(coin):
     # height, whether the transaction is coinbase or not, value, script type and script.
     # We start by decoding the first b128 VARINT of the provided data, that may contain 2*Height + coinbase
     code, offset = parse_b128(coin)
-    code = b128_decode(code)
 
     # The next value in the sequence corresponds to the utxo value, the amount of Satoshi hold by the utxo. Data is
     # encoded as a B128 VARINT, and compressed using the equivalent to txout_compressor.
-    data, offset = parse_b128(coin, offset)
+    value, offset = parse_b128(coin, offset)
 
     # Finally, we can obtain the data type by parsing the last B128 VARINT
     out_type, offset = parse_b128(coin, offset)
     out_type = b128_decode(out_type)
 
     if out_type in [0, 1]:
-        data_size = 40  # 20 bytes
+        data_size = 20
     elif out_type in [2, 3, 4, 5]:
-        data_size = 66  # 33 bytes (1 byte for the type + 32 bytes of data)
+        data_size = 33  # (1 byte for the type + 32 bytes of data)
         offset -= 2
     # Finally, if another value is found, it represents the length of the following data, which is uncompressed.
     else:
-        data_size = (out_type - NSPECIALSCRIPTS) * 2  # If the data is not compacted, the out_type corresponds
+        data_size = out_type - NSPECIALSCRIPTS  # If the data is not compacted, the out_type corresponds
         # to the data size adding the number os special scripts (nSpecialScripts).
 
     # And the remaining data corresponds to the script.
@@ -263,13 +256,11 @@ def get_blk_max_block_height(blk_n, fin_name):
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)
-    blk_data_raw = db.get(key)
+    blk_data = db.get(key)
     db.close()
 
-    if not blk_data_raw:
+    if not blk_data:
         return 0
-
-    blk_data = hexlify(blk_data_raw)
 
     # parse data directly
     nBlocks, offset = parse_b128(blk_data)
@@ -311,13 +302,13 @@ def decode_utxo(coin, outpoint):
 
     # First we will parse all the data encoded in the outpoint, that is, the transaction id and index of the utxo.
     # Check that the input data corresponds to a transaction.
-    assert outpoint[:2] == '43'
+    assert outpoint[0] == 0x43
     # Check the provided outpoint has at least the minimum length (1 byte of key code, 32 bytes tx id, 1 byte index)
-    assert len(outpoint) >= 68
+    assert len(outpoint) >= 34
     # Get the transaction id (LE) by parsing the next 32 bytes of the outpoint.
-    tx_id = outpoint[2:66]
+    tx_id = outpoint[1:33]
     # Finally get the transaction index by decoding the remaining bytes as a b128 VARINT
-    tx_index = b128_decode(outpoint[66:])
+    tx_index = b128_decode(outpoint[33:])
 
     # Once all the outpoint data has been parsed, we can proceed with the data encoded in the coin, that is, block
     # height, whether the transaction is coinbase or not, value, script type and script.
@@ -361,7 +352,7 @@ def decode_utxo(coin, outpoint):
     return {'tx_id': tx_id, 'index': tx_index, 'coinbase': coinbase, 'out': out, 'height': height}
 
 
-def check_opreturn(script):
+def is_opreturn(script):
     """
     Checks whether a given script is an OP_RETURN one.
 
@@ -373,10 +364,10 @@ def check_opreturn(script):
     :rtype: bool
     """
     op_return_opcode = 0x6a
-    return int(script[:2], 16) == op_return_opcode
+    return script[0] == op_return_opcode
 
 
-def check_native_segwit(script):
+def is_native_segwit(script):
     """
     Checks whether a given output script is a native SegWit type.
 
@@ -386,61 +377,64 @@ def check_native_segwit(script):
     :rtype: tuple, first element boolean
     """
 
-    if len(script) == 22*2 and script[:4] == "0014":
+    if len(script) == 22 and script[:2] == bytes.fromhex("0014"):
         return True, "P2WPKH"
 
-    if len(script) == 34*2 and script[:4] == "0020":
+    if len(script) == 34 and script[:2] == bytes.fromhex("0020"):
         return True, "P2WSH"
 
     return False, None
 
 
-def get_utxo(tx_id, index, fin_name):
+def get_utxo(txid_string, index, fin_name):
     """
     Gets a UTXO from the chainstate identified by a given transaction id and index.
     If the requested UTXO does not exist, return None.
 
-    :param tx_id: Transaction ID that identifies the UTXO you are looking for.
-    :type tx_id: str
+    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
+    :type txid_string: str
     :param index: Index that identifies the specific output.
     :type index: int
     :param fin_name: Name of the LevelDB folder (chainstate by default)
     :type fin_name: str
     :return: A outpoint:coin pair representing the requested UTXO
-    :rtype: (str, str)
+    :rtype: (byte, byte)
     """
 
     prefix = b'C'
-    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
+    txid = bytes.fromhex(txid_string)[::-1]  # TXIDs are little-endian hex strings
+    outpoint = prefix + txid + b128_encode(index)
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
 
     # Load obfuscation key (if it exists)
-    o_key = db.get((unhexlify('0e00') + b'obfuscate_key'))
+    o_key = db.get((bytes.fromhex('0e00') + b'obfuscate_key'))
 
     # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
     # 8-byte zeros are used (since the key will be XORed with the given values).
     if o_key is not None:
-        o_key = hexlify(o_key)[2:]
+        o_key = o_key[1:]
 
     coin = db.get(outpoint)
 
     if coin is not None and o_key is not None:
-        coin = deobfuscate_value(o_key, hexlify(coin))
+        coin = deobfuscate_value(o_key, coin)
 
     db.close()
 
     return (outpoint, coin)
 
 
-def get_block_index_entry(block_hash, fin_name):
+def get_block_index_entry(block_hash_string, fin_name):
     """
     TODO
     """
 
+    block_hash = bytes.fromhex(block_hash_string)[::-1]  # block hash is little-endian hex string
+
     prefix = b'b'
-    key = prefix + lx(block_hash)
+    key = prefix + block_hash
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
@@ -453,14 +447,14 @@ def get_block_index_entry(block_hash, fin_name):
 
 
 # TODO refactor significant code duplication
-def put_utxo(coin, tx_id, index, fin_name):
+def put_utxo(coin, txid_string, index, fin_name):
     """
     Puts a UTXO into the chainstate under a given transaction id and index.
 
     :param coin: Serialized coin to put
     :type coin: bytes
-    :param tx_id: Transaction ID that identifies the UTXO you are looking for.
-    :type tx_id: str
+    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
+    :type txid_string: str
     :param index: Index that identifies the specific output.
     :type index: int
     :param fin_name: Name of the LevelDB folder (chainstate by default)
@@ -470,36 +464,37 @@ def put_utxo(coin, tx_id, index, fin_name):
     """
 
     prefix = b'C'
-    outpoint = prefix + lx(tx_id) + x(b128_encode(index))
+    txid = bytes.fromhex(txid_string)[::-1]  # TXIDs are little-endian hex strings
+    outpoint = prefix + txid + b128_encode(index)
 
     # Open the LevelDB
     db = plyvel.DB(fin_name, compression=None)  # Change with path to chainstate
 
     # Load obfuscation key (if it exists)
-    o_key = db.get((unhexlify('0e00') + b'obfuscate_key'))
+    o_key = db.get((bytes.fromhex('0e00') + b'obfuscate_key'))
 
     # If the key exists, the leading byte indicates the length of the key (8 byte by default). If there is no key,
     # 8-byte zeros are used (since the key will be XORed with the given values).
     if o_key is not None:
-        o_key = hexlify(o_key)[2:]
+        o_key = o_key[1:]
 
-    coin = deobfuscate_value(o_key, hexlify(coin))
+    coin = deobfuscate_value(o_key, coin)
 
-    db.put(outpoint, x(coin))
+    db.put(outpoint, coin)
 
     db.close()
 
     return (outpoint, coin)
 
 
-def erase_utxo(tx_id, index, fin_name):
+def erase_utxo(txid_string, index, fin_name):
     """
     Erase UTXO from chainstate database.
 
     TODO
 
-    :param tx_id: Transaction ID that identifies the UTXO you are looking for.
-    :type tx_id: str
+    :param txid_string: Transaction ID that identifies the UTXO you are looking for.
+    :type txid_string: str
     :param index: Index that identifies the specific output.
     :type index: int
     :param fin_name: Name of the LevelDB folder (chainstate by default)
@@ -508,19 +503,18 @@ def erase_utxo(tx_id, index, fin_name):
     :rtype:
     """
 
-    # TODO refactor significant code duplication + make cleaner in general
-    (outpoint, coin) = get_utxo(tx_id, index, fin_name)
+    (outpoint, coin) = get_utxo(txid_string, index, fin_name)
     if coin:
         new_coin = make_anyone_can_spend(coin)
-        put_utxo(x(new_coin), tx_id, index, fin_name)
+        put_utxo(new_coin, txid_string, index, fin_name)
 
 
 def erase_utxos(utxos, data_dir, mode):
 
     chainstate_dir = path.join(data_dir, mode2dir(mode), 'chainstate')
 
-    for (txid, index) in utxos:
-        erase_utxo(txid, index, chainstate_dir)
+    for (txid_string, index) in utxos:
+        erase_utxo(txid_string, index, chainstate_dir)
 
 
 def deobfuscate_value(obfuscation_key, value):
@@ -535,29 +529,24 @@ def deobfuscate_value(obfuscation_key, value):
     :rtype: str.
     """
 
+    if not obfuscation_key:
+        return value
+
     l_value = len(value)
     l_obf = len(obfuscation_key)
 
     # Get the extended obfuscation key by concatenating the obfuscation key with itself until it is as large as the
     # value to be de-obfuscated.
-    if l_obf < l_value:
-        extended_key = (obfuscation_key * (int(l_value / l_obf) + 1))[:l_value]
-    else:
-        extended_key = obfuscation_key[:l_value]
+    extended_key = (obfuscation_key * (int(l_value / l_obf) + 1))[:l_value]
 
-    r = format(int(value, 16) ^ int(extended_key, 16), 'x')
-
-    # In some cases, the obtained value could be 1 byte smaller than the original, since the leading 0 is dropped off
-    # when the formatting.
-    if len(r) == l_value-1:
-        r = r.zfill(l_value)
+    r = bytes([v ^ k for (v, k) in zip(value, extended_key)])
 
     assert len(value) == len(r)
 
     return r
 
 
-def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
+def get_min_height_to_prune_to(block_hash_string, data_dir, mode='testnet'):
     """TODO: Docstring for get_min_height_to_prune_to.
 
     :data_dir: TODO
@@ -567,11 +556,11 @@ def get_min_height_to_prune_to(block_hash, data_dir, mode='testnet'):
     """
     fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
 
-    blk_n = get_blk_n_from_block_data(hexlify(get_block_index_entry(block_hash, fin_name)))
+    blk_n = get_blk_n_from_block_data(get_block_index_entry(block_hash_string, fin_name))
     return get_blk_max_block_height(blk_n, fin_name) if blk_n else 0
 
 
-def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
+def are_blks_erased(block_hashes, data_dir, mode='testnet'):
 
     # FIXME crashes if block_hash unknown (really?)
     highest_bad_blk_n = get_heighest_bad_blk_n(block_hashes, data_dir, mode)
@@ -579,17 +568,17 @@ def check_if_blks_erased(block_hashes, data_dir, mode='testnet'):
     blocks_path = path.join(data_dir, mode2dir(mode), 'blocks')
 
     lowest_stored_files = [sorted(glob.glob(path.join(blocks_path, regexp)))[0] for regexp in ['blk*.dat', 'rev*.dat']]
-    lowest_stored_blk_n = min([int(re.findall('\d+', x)[0]) for x in lowest_stored_files])
+    lowest_stored_blk_n = all([int(re.findall(r'\d+', x)[0]) for x in lowest_stored_files])
 
     return lowest_stored_blk_n > highest_bad_blk_n
 
 
-def check_if_utxos_erased(utxos, data_dir, mode='testnet'):
+def are_utxos_erased(utxos, data_dir, mode='testnet'):
 
-    return min(check_if_utxo_erased(x, data_dir, mode) for x in utxos)
+    return all(is_utxo_erased(x, data_dir, mode) for x in utxos)
 
 
-def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
+def is_utxo_erased(utxo, data_dir, mode='testnet'):
 
     (tx_id, index) = utxo
     fin_name = path.join(data_dir, mode2dir(mode), 'chainstate')
@@ -604,7 +593,7 @@ def check_if_utxo_erased(utxo, data_dir, mode='testnet'):
 def get_heighest_bad_blk_n(block_hashes, data_dir, mode='testnet'):
 
     fin_name = path.join(data_dir, mode2dir(mode), 'blocks', 'index')
-    return max(map(lambda x: get_blk_n_from_block_data(hexlify(get_block_index_entry(x, fin_name))), block_hashes))
+    return max(map(lambda x: get_blk_n_from_block_data(get_block_index_entry(x, fin_name)), block_hashes))
 
 
 def prune_up_to(height, btc_conf_file, mode='testnet'):

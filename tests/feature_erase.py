@@ -155,14 +155,14 @@ def mine_large_blocks(node, nblocks):
         mine_large_block(node, utxo_cache)
 
 
-# perhaps useful for 50% fuzz test
+# perhaps useful in the future (e.g., for fuzz testing)
 def generate_nonempty_blocks(nodes, nblocks=500):
     txes_per_block = 10
 
     for i in range(nblocks):
         for j in range(txes_per_block):
             (s, r) = random.sample(nodes, k=2)
-            amount = random.randint(1, 1000)/ 1000.
+            amount = random.randint(1, 1000) / 1000.
             s.sendtoaddress(r.getnewaddress(), amount)
         random.choice(nodes).generate(nblocks=1)
         sync_blocks(nodes)
