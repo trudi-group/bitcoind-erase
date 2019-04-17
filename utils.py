@@ -184,7 +184,7 @@ def are_blks_erased(block_hashes, data_dir: str, mode: str = 'testnet') -> bool:
     blocks_path = path.join(data_dir, mode2dir(mode), 'blocks')
 
     lowest_stored_files = [sorted(glob.glob(path.join(blocks_path, regexp)))[0] for regexp in ['blk*.dat', 'rev*.dat']]
-    lowest_stored_blk_n = all([int(re.findall(r'\d+', x)[0]) for x in lowest_stored_files])
+    lowest_stored_blk_n = min([int(re.findall(r'\d+', x)[0]) for x in lowest_stored_files])
 
     return lowest_stored_blk_n > highest_bad_blk_n
 

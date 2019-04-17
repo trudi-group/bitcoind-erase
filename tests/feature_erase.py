@@ -143,7 +143,7 @@ class ErasureTest(BitcoinTestFramework):
         self.log.info("Stopping node 2 (again).")
         self.stop_node(2)
 
-        self.log.info("Assert that UTXOs not erased according to tool.")
+        self.log.info("Assert that UTXOs are erased according to tool.")
         assert_equal(tool.check(erase_target, n2.datadir, 'regtest'), True)
 
 
