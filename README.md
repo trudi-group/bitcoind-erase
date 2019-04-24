@@ -2,7 +2,7 @@
 
 This is a proof-of-concept implementation as part of a research paper:
 
-M. Florian, S. Beaucamp, S. Henningsen and B. Scheuermann, "Erasing Data from Blockchain Nodes", to be presented at *IEEE Security & Privacy on the Blockchain (IEEE S&B) 2019*.
+M. Florian, S. Beaucamp, S. Henningsen and B. Scheuermann, "Erasing Data from Blockchain Nodes", *IEEE Security & Privacy on the Blockchain (IEEE S&B) 2019*. Available: https://arxiv.org/abs/1904.08901
 
 Paper abstract:
 
